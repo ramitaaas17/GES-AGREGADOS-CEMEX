@@ -3,6 +3,16 @@
 Genera la "Base Cedis DW##" a partir de 4 archivos de entrada de SAP, cruzando precios de
 materia prima, fletes, condiciones de compra (TRAOPE) y el catálogo de materiales.
 
+## Requisitos (para instalar en una computadora nueva)
+
+```
+python -m pip install -r requirements.txt
+```
+
+Necesita Python 3.10+ y las librerías fijadas en `requirements.txt` (mismas versiones con
+las que se probó todo). No hace falta nada más — el script no necesita que Excel esté
+instalado ni cerrado (puede leer el archivo fuente aunque este abierto en Excel).
+
 ## Entradas (4 archivos, en una misma carpeta)
 
 El script detecta cada archivo por su nombre (no importa el orden ni el nombre exacto,
@@ -39,10 +49,61 @@ encuentra, usa `DW00`.
 **Desde el menú** (`python ..\menu.py`, opción 1): solo pide la carpeta con los 4 archivos
 y dónde guardar el resultado.
 
-**Directo por terminal:**
+**Directo por terminal (4 archivos crudos de SAP, un CEDIS a la vez):**
 ```
 python matrizVentas.py "C:\ruta\a\la\carpeta"
 python matrizVentas.py --mp MP.xlsx --flete Fletes.xlsx --traope TRAOPE.xlsx --materiales MAT.xlsx --output "C:\salida" --cedis DW88
+```
+
+**Directo por terminal (archivo consolidado de Snowflake, todos los CEDIS o uno solo):**
+```
+python matrizVentas.py --fuente "Extracción de Datos Agregados....xlsm"
+python matrizVentas.py --fuente "Extracción de Datos Agregados....xlsm" --cedis D836 --output "C:\salida"
+```
+
+## Fuente Snowflake (archivo consolidado)
+
+Además de los 4 archivos crudos de SAP, el script puede leer directamente un único
+archivo `.xlsm`/`.xlsx` que ya trae, en un solo libro, las 4 hojas que alimenta el
+archivo que se arma con datos de Snowflake:
+
+| Hoja del archivo consolidado | Equivale a |
+|---|---|
+| `CONT_COMPRA TRAOPE` | TRAOPE |
+| `PVTA_MAT VK13` | MP |
+| `PVTA_FTE VK13` | Flete |
+| `PESO_VOL` | Materiales (usa el PV ya calculado en la columna "Cant. UMB", no se recalcula) |
+
+Este archivo trae **todos los CEDIS a la vez** (Sacos/Intergiros con clases de condición
+ZMAH/ZMPH y Agregados/Terceros con ZMA6/ZMP1, mezclados). Por eso, al usar `--fuente` sin
+`--cedis`, el script genera automáticamente un "Base Cedis" por cada CEDIS distinto que
+encuentra, guardando cada uno en su propia carpeta
+`MatrizVentas_Generado\<CEDIS>\salidas\`, igual que en el flujo de archivos crudos.
+
+Es normal que algunas filas de MP no tengan Flete o Costo (TRAOPE) asociado — es un hueco
+real de datos (esa combinación Ship From/Destino/Material aún no tiene flete o precio de
+compra cargado en SAP), no un error del cruce. En ese caso el archivo "Con Formulas" deja
+esas celdas en blanco en vez de mostrar un error de Excel.
+
+### Cache del archivo fuente
+
+Leer y parsear el archivo consolidado completo (~47,000 filas entre las 4 hojas) toma
+unos ~20 segundos. Para no pagar ese costo cada vez que alguien pide un solo CEDIS, el
+script guarda los datos ya parseados en un cache en disco (`.matrizventas_cache\` junto
+al archivo fuente, o donde indique `--cache-dir`). Mientras el archivo fuente no cambie
+de tamaño/fecha de modificación, las corridas siguientes reusan ese cache — pedir un
+CEDIS pasa de ~20s a ~3s.
+
+- El cache se invalida solo en cuanto el archivo fuente se vuelve a guardar/actualizar
+  (se compara tamaño + fecha de modificación).
+- `--refresh-cache` fuerza a ignorar el cache y releer todo, por si se necesita forzar
+  una actualización con certeza (equivalente al botón "Refresh" de la idea de SharePoint).
+- Nota: el cache acelera la LECTURA del archivo fuente; el tiempo de ESCRIBIR el Base
+  Cedis de un CEDIS grande (miles de filas) sigue siendo proporcional a su tamaño.
+
+```
+python matrizVentas.py --fuente "Extracción....xlsm" --cedis D836   # usa cache si existe y es valido
+python matrizVentas.py --fuente "Extracción....xlsm" --refresh-cache # fuerza releer todo
 ```
 
 ## Flujo interno (resumen)

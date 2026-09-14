@@ -21,11 +21,13 @@ Uso:
 
 
 import argparse
+import pickle
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, Tuple
 
 
 import pandas as pd
@@ -75,7 +77,11 @@ EXCEL_EXTS = {".xlsx", ".xls", ".xlsm", ".xlsb"}
 # ═══════════════════════════════════════════════════════════
 
 
+@lru_cache(maxsize=None)
 def _fill(rgb: str) -> PatternFill:
+   """Cacheado: instanciar un PatternFill nuevo por celda (en vez de reusar
+   uno por color) es lo que hacia que resaltar miles de celdas (ej. las
+   validaciones en amarillo) fuera muy lento — ver nota junto a FONT_DATA."""
    return PatternFill(patternType="solid", fgColor=rgb)
 
 
@@ -109,6 +115,13 @@ CLR_WARN       = "FFFF00"   # amarillo     → diferencia > 1 en validacion 2
 
 FONT_HDR  = Font(bold=True, size=10)
 FONT_SEC  = Font(bold=True, size=11, color="FFFFFF")
+# Reutilizado (no crear uno nuevo por celda): instanciar un Font/Alignment/Border
+# distinto para cada una de miles de celdas obliga a openpyxl a comparar y
+# deduplicar estilos por hash en cada escritura, lo cual es carisimo a escala
+# (con archivos de varios miles de filas, esto por si solo llegaba a tomar mas
+# de un minuto por CEDIS). Reusar la misma instancia es seguro porque estos
+# objetos de estilo son inmutables en openpyxl.
+FONT_DATA = Font(size=10)
 ALIGN_CTR = Alignment(horizontal="center", vertical="center", wrap_text=True)
 ALIGN_LFT = Alignment(horizontal="left",   vertical="center")
 ALIGN_RGT = Alignment(horizontal="right",  vertical="center")
@@ -693,13 +706,14 @@ def parse_traope(path: Path) -> pd.DataFrame:
        return None
 
 
-   sf_ci          = find_col("Ship From")
-   nombre_sf_ci   = find_col("Nombre SF")
-   mat_ci         = find_col("Material")
-   centro_ci      = find_col("Centro")
-   destino_ci     = find_col("Destino")
-   precio_ci      = find_col("Precio neto pedido", "Precio neto")
-   um_precio_ci   = find_col("UM Precio Pedido")
+   sf_ci            = find_col("Ship From")
+   nombre_sf_ci     = find_col("Nombre SF")
+   mat_ci           = find_col("Material")
+   centro_ci        = find_col("Centro")
+   destino_ci       = find_col("Destino")
+   nombre_destino_ci = find_col("Nombre Destino")
+   precio_ci        = find_col("Precio neto pedido", "Precio neto")
+   um_precio_ci     = find_col("UM Precio Pedido")
 
 
    # Determinar inicio de datos
@@ -736,15 +750,17 @@ def parse_traope(path: Path) -> pd.DataFrame:
    df = pd.DataFrame(rows) if rows else pd.DataFrame()
    # Guardar metadatos de columnas para uso posterior
    df.attrs["col_map"]       = col_map
-   df.attrs["sf_ci"]         = sf_ci
-   df.attrs["nombre_sf_ci"]  = nombre_sf_ci
-   df.attrs["mat_ci"]        = mat_ci
-   df.attrs["centro_ci"]     = centro_ci
-   df.attrs["destino_ci"]    = destino_ci
-   df.attrs["precio_ci"]     = precio_ci
-   df.attrs["um_precio_ci"]  = um_precio_ci
-   df.attrs["col_offset"]    = col_offset
-   df.attrs["hdr_idx"]       = hdr_idx
+   df.attrs["sf_ci"]            = sf_ci
+   df.attrs["nombre_sf_ci"]     = nombre_sf_ci
+   df.attrs["mat_ci"]           = mat_ci
+   df.attrs["centro_ci"]        = centro_ci
+   df.attrs["destino_ci"]       = destino_ci
+   df.attrs["nombre_destino_ci"] = nombre_destino_ci
+   df.attrs["precio_ci"]        = precio_ci
+   df.attrs["um_precio_ci"]     = um_precio_ci
+   df.attrs["col_offset"]       = col_offset
+   df.attrs["hdr_idx"]          = hdr_idx
+   df.attrs["is_extraccion"]    = False
    print(f"   TRAOPE: {len(df)} registros")
    return df
 
@@ -959,8 +975,11 @@ def validation_formula(r: int, cols: Dict[str, int] = COLS) -> str:
    pv   = _ref("PV",             r, cols)
    mp   = _ref("IMPORTE_MP",     r, cols)
    fl   = _ref("IMPORTE_FLETE",  r, cols)
-   # Nota: G&""="1" convierte tanto numero 1 como texto "1" a "1" para comparar correctamente
-   return f'=IF(AND({um_v}="TN",{um_c}="TN"),{mp}+{fl},IF({cond}&""="1",{pv}*{mp},({mp}+{fl})*{pv}))'
+   # Nota: G&""="1" convierte tanto numero 1 como texto "1" a "1" para comparar correctamente.
+   # Nota: N(...) convierte "" (cuando el VLOOKUP de Flete o PV no encuentra match) a 0, para
+   # que la fila no truene en #VALOR! y quede consistente con calc_validation1 (que ya trata
+   # Flete/PV faltantes como 0 en el archivo de valores).
+   return f'=IF(AND({um_v}="TN",{um_c}="TN"),{mp}+N({fl}),IF({cond}&""="1",N({pv})*{mp},({mp}+N({fl}))*N({pv})))'
 
 
 
@@ -1042,25 +1061,56 @@ def _apply_col_dims(ws, cols: Dict[str, int] = COLS, freeze: str = "C3"):
 # ═══════════════════════════════════════════════════════════
 
 
-def build_main_sheet_formulas(ws, mp_df: pd.DataFrame, flete_lkp: dict, traope_lkp: dict, mat_lkp: dict):
+def _traope_out_col(traope_df: pd.DataFrame, attr_key: str) -> Optional[int]:
+   """
+   Traduce el indice de columna original (0-indexed, tal cual aparece en el
+   archivo fuente de TRAOPE) a la columna (1-indexed) donde esa misma
+   informacion queda escrita en el sub-sheet TRAOPE del workbook de salida.
+
+   El sub-sheet siempre escribe Concat1 en la columna A y despues, a partir
+   de la columna B, todas las columnas originales del archivo fuente en su
+   mismo orden (saltando solo las que quedan antes de `col_offset`). Por eso
+   la formula es la misma sin importar si el origen es el TRAOPE clasico de
+   SAP o el nuevo archivo consolidado: out_col = ci - col_offset + 2.
+
+   Calcularlo asi (en vez de asumir columnas fijas como F/G/V/Y/AD/AE) es lo
+   que permite que las formulas VLOOKUP del archivo "Con Formulas" sigan
+   funcionando aunque el layout de columnas del archivo de origen cambie.
+   """
+   ci = traope_df.attrs.get(attr_key)
+   if ci is None:
+       return None
+   col_offset = traope_df.attrs.get("col_offset", 0)
+   return ci - col_offset + 2
+
+
+def build_main_sheet_formulas(ws, mp_df: pd.DataFrame, flete_lkp: dict, traope_lkp: dict, mat_lkp: dict,
+                               traope_df: pd.DataFrame):
    """
    Escribe el sheet principal con formulas VLOOKUP/IFERROR que apuntan
    a los sub-sheets: TRAOPE, Flete, Materiales.
 
 
-   Referencias de columnas en sub-sheet TRAOPE (1-indexed, con Concat1 en A):
-     F(6)  = Ship From      → VLOOKUP Nombre SF:  rango $F:$G, col 2
-     V(22) = Precio neto    → VLOOKUP Importe Costo: rango $A:$V, col 22
-     Y(25) = UM Precio Ped  → VLOOKUP UM Costo: rango $A:$Y, col 25
-     AD(30)= Destino        → VLOOKUP Nombre Destino: rango $AD:$AE, col 2
+   Las columnas del sub-sheet TRAOPE (Nombre SF, Precio neto, UM Precio
+   Pedido, Nombre Destino) se ubican dinamicamente segun el layout real del
+   archivo de origen (ver `_traope_out_col`), ya que ese layout cambia entre
+   el TRAOPE clasico de SAP y el archivo consolidado nuevo.
 
-
-   Referencias de columnas en sub-sheet Flete (1-indexed, con Concat1 en A):
+   Referencias de columnas en sub-sheet Flete (1-indexed, con Concat1 en A) —
+   estas si son fijas porque `write_flete_sheet` siempre las escribe en ese
+   mismo layout normalizado sin importar el origen:
      E(5)  = Cond. Exp.    → VLOOKUP: rango $A:$E, col 5
      J(10) = Importe Flete → VLOOKUP: rango $A:$J, col 10
    """
    _write_section_headers(ws)
    _write_col_headers(ws)
+
+   sf_out             = _traope_out_col(traope_df, "sf_ci")
+   nombre_sf_out      = _traope_out_col(traope_df, "nombre_sf_ci")
+   precio_out         = _traope_out_col(traope_df, "precio_ci")
+   um_precio_out      = _traope_out_col(traope_df, "um_precio_ci")
+   destino_out        = _traope_out_col(traope_df, "destino_ci")
+   nombre_destino_out = _traope_out_col(traope_df, "nombre_destino_ci")
 
 
    def wv(col_key, row, value, fmt=None, align=None):
@@ -1068,7 +1118,7 @@ def build_main_sheet_formulas(ws, mp_df: pd.DataFrame, flete_lkp: dict, traope_l
        cell = ws.cell(row=row, column=COLS[col_key])
        cell.value = value
        al = align or (ALIGN_RGT if fmt else ALIGN_LFT)
-       _apply(cell, font=Font(size=10), alignment=al, border=BORDER)
+       _apply(cell, font=FONT_DATA, alignment=al, border=BORDER)
        if fmt:
            cell.number_format = fmt
 
@@ -1107,8 +1157,9 @@ def build_main_sheet_formulas(ws, mp_df: pd.DataFrame, flete_lkp: dict, traope_l
        wv("UM_VENTA",        r, mp_row["um"],         align=ALIGN_CTR)
 
 
-       # BUSCARV: Nombre SF
-       wf("NOMBRE_SF",      r, f'=IFERROR(VLOOKUP({_ref("NO_SF",r)},TRAOPE!$F:$G,2,0),"")')
+       # BUSCARV: Nombre SF (rango dinamico segun donde cayeron Ship From / Nombre SF en el sub-sheet)
+       sf_lo, sf_hi = min(sf_out, nombre_sf_out), max(sf_out, nombre_sf_out)
+       wf("NOMBRE_SF",      r, f'=IFERROR(VLOOKUP({_ref("NO_SF",r)},TRAOPE!${get_column_letter(sf_lo)}:${get_column_letter(sf_hi)},{nombre_sf_out - sf_lo + 1},0),"")')
 
 
        # BUSCARV: Condicion Expedicion (desde Flete Concat1)
@@ -1120,7 +1171,8 @@ def build_main_sheet_formulas(ws, mp_df: pd.DataFrame, flete_lkp: dict, traope_l
        if nombre_dest_mp:
            wv("NOMBRE_DESTINO", r, nombre_dest_mp)
        else:
-           wf("NOMBRE_DESTINO", r, f'=IFERROR(VLOOKUP({_ref("DESTINO",r)},TRAOPE!$AD:$AE,2,0),"")')
+           dest_lo, dest_hi = min(destino_out, nombre_destino_out), max(destino_out, nombre_destino_out)
+           wf("NOMBRE_DESTINO", r, f'=IFERROR(VLOOKUP({_ref("DESTINO",r)},TRAOPE!${get_column_letter(dest_lo)}:${get_column_letter(dest_hi)},{nombre_destino_out - dest_lo + 1},0),"")')
 
 
        # BUSCARV: Nombre Material desde Materiales col H(8)
@@ -1135,25 +1187,33 @@ def build_main_sheet_formulas(ws, mp_df: pd.DataFrame, flete_lkp: dict, traope_l
        wf("IMPORTE_FLETE",  r, f'=IFERROR(VLOOKUP({_ref("CONCAT1",r)},Flete!$A:$J,10,0),"")', FMT_NUM2)
 
 
-       # BUSCARV: Importe Costo (IFERROR con Concat1 primero, luego Concat2)
+       # BUSCARV: Importe Costo (IFERROR con Concat1 primero, luego Concat2).
+       # El rango siempre arranca en A (donde vive Concat1), asi que el indice
+       # de columna del VLOOKUP es directamente precio_out/um_precio_out.
+       # Se envuelve todo en un IFERROR final a "" para que, si NINGUNA de
+       # las dos llaves encuentra costo en TRAOPE (dato faltante real, no
+       # error), la celda quede en blanco en vez de propagar #N/A.
        wf("IMPORTE_COSTO",  r,
-           f'=IFERROR('
-           f'VLOOKUP({_ref("CONCAT1",r)},TRAOPE!$A:$V,22,0),'
-           f'VLOOKUP({_ref("CONCAT2",r)},TRAOPE!$A:$V,22,0))',
+           f'=IFERROR(IFERROR('
+           f'VLOOKUP({_ref("CONCAT1",r)},TRAOPE!$A:${get_column_letter(precio_out)},{precio_out},0),'
+           f'VLOOKUP({_ref("CONCAT2",r)},TRAOPE!$A:${get_column_letter(precio_out)},{precio_out},0)),"")',
            FMT_NUM2)
 
 
        # BUSCARV: UM Costo (misma logica)
        wf("UM_COSTO",       r,
-           f'=IFERROR('
-           f'VLOOKUP({_ref("CONCAT1",r)},TRAOPE!$A:$Y,25,0),'
-           f'VLOOKUP({_ref("CONCAT2",r)},TRAOPE!$A:$Y,25,0))',
+           f'=IFERROR(IFERROR('
+           f'VLOOKUP({_ref("CONCAT1",r)},TRAOPE!$A:${get_column_letter(um_precio_out)},{um_precio_out},0),'
+           f'VLOOKUP({_ref("CONCAT2",r)},TRAOPE!$A:${get_column_letter(um_precio_out)},{um_precio_out},0)),"")',
            align=ALIGN_CTR)
 
 
        # Formulas de validacion
        wf("VALIDACION1", r, validation_formula(r), FMT_NUM2)
-       wf("VALIDACION2", r, f'={_ref("IMPORTE_COSTO",r)}-{_ref("VALIDACION1",r)}', FMT_NUM2)
+       # Si no hay Importe Costo (dato faltante), no hay nada que comparar:
+       # se deja en blanco en vez de forzarlo a 0 (lo que inventaria una
+       # diferencia de margen falsa) o dejar que truene en #VALOR!.
+       wf("VALIDACION2", r, f'=IF({_ref("IMPORTE_COSTO",r)}="","",{_ref("IMPORTE_COSTO",r)}-{_ref("VALIDACION1",r)})', FMT_NUM2)
 
 
    _apply_col_dims(ws)
@@ -1189,7 +1249,7 @@ def build_main_sheet_values(ws, mp_df: pd.DataFrame, flete_lkp: dict, traope_lkp
        cell = ws.cell(row=row, column=COLS_CLEAN[col_key])
        cell.value = value
        al = align or (ALIGN_RGT if fmt else ALIGN_LFT)
-       _apply(cell, font=Font(size=10), alignment=al, border=BORDER)
+       _apply(cell, font=FONT_DATA, alignment=al, border=BORDER)
        if fmt:
            cell.number_format = fmt
        if warn_fill:
@@ -1569,6 +1629,320 @@ def write_mp_sheet(ws, mp_df: pd.DataFrame):
 
 
 # ═══════════════════════════════════════════════════════════
+#  ARCHIVO CONSOLIDADO (Snowflake) — hojas ya resumidas
+# ═══════════════════════════════════════════════════════════
+#
+# A diferencia de los 4 archivos crudos de SAP, este archivo trae 4 hojas ya
+# limpias y con encabezados reales, dentro de UN SOLO libro, cubriendo TODOS
+# los CEDIS a la vez (no uno por archivo). Por eso el parseo aqui es directo
+# por nombre de columna (no hace falta detectar formato columnar/vertical ni
+# adivinar donde empiezan los datos) y el filtrado por CEDIS se hace despues,
+# sobre los DataFrames ya parseados (ver `run_extraccion` en el CLI).
+
+EXTRACCION_SHEET_NAMES: Dict[str, str] = {
+   "traope":     "CONT_COMPRA TRAOPE",
+   "mp":         "PVTA_MAT VK13",
+   "flete":      "PVTA_FTE VK13",
+   "materiales": "PESO_VOL",
+}
+
+
+def load_extraccion_raw(path: Path) -> Dict[str, pd.DataFrame]:
+   """Lee las 4 hojas del archivo consolidado (una sola apertura del libro)."""
+   xls = pd.ExcelFile(path, engine="openpyxl")
+   raw: Dict[str, pd.DataFrame] = {}
+   faltantes = []
+   for key, sheet_name in EXTRACCION_SHEET_NAMES.items():
+       if sheet_name not in xls.sheet_names:
+           faltantes.append(sheet_name)
+           continue
+       raw[key] = pd.read_excel(xls, sheet_name=sheet_name, header=0)
+   if faltantes:
+       raise ValueError(
+           f"No se encontraron estas hojas en '{path.name}': {', '.join(faltantes)}. "
+           f"Hojas disponibles: {', '.join(xls.sheet_names)}"
+       )
+   return raw
+
+
+# Se sube cada vez que cambia como se parsean las hojas, para que un cache
+# viejo (con una estructura de datos distinta) nunca se reuse por error.
+EXTRACCION_CACHE_VERSION = 1
+
+
+def _source_fingerprint(path: Path) -> Tuple[int, int]:
+   """Tamano + fecha de modificacion del archivo fuente (sin leer su contenido,
+   para que revisar 'ya cambio?' sea instantaneo en vez de tener que
+   re-hashear 9+ MB en cada corrida)."""
+   st = path.stat()
+   return (st.st_size, st.st_mtime_ns)
+
+
+def _cache_path(fuente: Path, cache_dir: Optional[Path]) -> Path:
+   base = cache_dir if cache_dir else fuente.parent / ".matrizventas_cache"
+   base.mkdir(parents=True, exist_ok=True)
+   return base / f"{fuente.stem}.cache.pkl"
+
+
+def load_extraccion_cached(fuente: Path, cache_dir: Optional[Path] = None,
+                            force_refresh: bool = False) -> Dict[str, pd.DataFrame]:
+   """
+   Lee y parsea las 4 hojas del archivo consolidado, pero evita repetir el
+   trabajo pesado (~20s leyendo y parseando ~47,000 filas) en cada corrida:
+   guarda los DataFrames YA parseados (con sus `.attrs`, ej. las posiciones
+   de columna que usa TRAOPE) en un cache en disco junto con el tamano y
+   fecha de modificacion del archivo fuente en ese momento.
+
+   La siguiente vez que se llame, si el archivo fuente sigue teniendo el
+   mismo tamano/fecha (es decir, nadie lo volvio a guardar/actualizar), se
+   reusa el cache directamente sin tocar el Excel de nuevo. Esto es lo que
+   permite que pedir "solo dame la matriz de un CEDIS" sea rapido: la parte
+   cara (leer TODO el archivo) solo se paga una vez por actualizacion real
+   del origen, no una vez por cada CEDIS que alguien pida.
+
+   `force_refresh=True` ignora el cache aunque sea valido (equivalente al
+   boton de "refresh" cuando se sepa con certeza que el origen cambio).
+   """
+   cpath = _cache_path(fuente, cache_dir)
+   fingerprint = _source_fingerprint(fuente)
+
+   if not force_refresh and cpath.is_file():
+       try:
+           with open(cpath, "rb") as f:
+               cached = pickle.load(f)
+           if cached.get("version") == EXTRACCION_CACHE_VERSION and cached.get("fingerprint") == fingerprint:
+               print(f"Cache valido ({cpath.name}): el archivo fuente no ha cambiado, no se vuelve a leer.")
+               return cached["data"]
+           print("Cache desactualizado (el archivo fuente cambio): reparseando...")
+       except Exception as e:
+           print(f"Cache ilegible ({e}): reparseando...")
+
+   print(f"Leyendo hojas de: {fuente.name} ...")
+   raw = load_extraccion_raw(fuente)
+
+   print("Parseando hojas...")
+   data = {
+       "traope":     parse_traope_extraccion(raw["traope"]),
+       "mp":         parse_mp_extraccion(raw["mp"]),
+       "flete":      parse_flete_extraccion(raw["flete"]),
+       "materiales": parse_materiales_extraccion(raw["materiales"]),
+   }
+
+   try:
+       with open(cpath, "wb") as f:
+           pickle.dump({"version": EXTRACCION_CACHE_VERSION, "fingerprint": fingerprint, "data": data}, f)
+       print(f"Cache guardado en: {cpath}")
+   except OSError as e:
+       print(f"Aviso: no se pudo guardar el cache ({e}); se seguira parseando cada vez.", file=sys.stderr)
+
+   return data
+
+
+def _require_columns(df: pd.DataFrame, required, sheet_label: str):
+   """
+   Valida que las columnas esperadas existan antes de usarlas. Sin esto, un
+   cambio de nombre de columna en el archivo fuente (ej. si el query de
+   Snowflake se vuelve a exportar con un encabezado ligeramente distinto)
+   se hubiera visto como un KeyError de pandas dificil de entender; asi se
+   ve de una vez cual columna falta y cuales si llegaron.
+   """
+   faltantes = [c for c in required if c not in df.columns]
+   if faltantes:
+       raise ValueError(
+           f"A la hoja '{sheet_label}' le faltan columnas esperadas: {', '.join(faltantes)}.\n"
+           f"Columnas encontradas en el archivo: {', '.join(str(c) for c in df.columns)}"
+       )
+
+
+def parse_traope_extraccion(raw: pd.DataFrame) -> pd.DataFrame:
+   """
+   Parsea la hoja CONT_COMPRA TRAOPE del archivo consolidado.
+
+   Ya trae encabezados reales (Ship From, Nombre SF, Material, Centro,
+   Destino, Nombre Destino, Precio neto pedido, UM Precio Pedido, ...), asi
+   que solo se agregan Concat1/Concat2 (llaves de cruce) y se guardan en
+   `.attrs` las posiciones de columna que necesitan las formulas VLOOKUP del
+   archivo "Con Formulas" (ver `_traope_out_col`).
+   """
+   df = raw.copy()
+   cols = list(df.columns)
+
+   def idx(*names) -> Optional[int]:
+       for n in names:
+           for i, c in enumerate(cols):
+               if n.lower() in str(c).lower():
+                   return i
+       return None
+
+   sf_ci             = idx("Ship From")
+   nombre_sf_ci      = idx("Nombre SF")
+   mat_ci            = idx("Material")
+   centro_ci         = idx("Centro")
+   destino_ci        = idx("Destino")
+   nombre_destino_ci = idx("Nombre Destino")
+   precio_ci         = idx("Precio neto pedido", "Precio neto")
+   um_precio_ci      = idx("UM Precio Pedido")
+
+   encontrados = {
+       "Ship From": sf_ci, "Nombre SF": nombre_sf_ci, "Material": mat_ci,
+       "Centro": centro_ci, "Destino": destino_ci, "Nombre Destino": nombre_destino_ci,
+       "Precio neto pedido": precio_ci, "UM Precio Pedido": um_precio_ci,
+   }
+   faltantes = [nombre for nombre, ci in encontrados.items() if ci is None]
+   if faltantes:
+       raise ValueError(
+           f"En la hoja CONT_COMPRA TRAOPE no se encontraron estas columnas: {', '.join(faltantes)}.\n"
+           f"Columnas encontradas en el archivo: {', '.join(str(c) for c in cols)}"
+       )
+
+   sf_s      = df.iloc[:, sf_ci].apply(str_val)
+   centro_s  = df.iloc[:, centro_ci].apply(str_val)
+   destino_s = df.iloc[:, destino_ci].apply(str_val)
+   mat_s     = df.iloc[:, mat_ci].apply(str_val)
+   df["concat1"] = sf_s + centro_s + destino_s + mat_s
+   df["concat2"] = sf_s + centro_s + mat_s
+
+   df.attrs["sf_ci"]             = sf_ci
+   df.attrs["nombre_sf_ci"]      = nombre_sf_ci
+   df.attrs["mat_ci"]            = mat_ci
+   df.attrs["centro_ci"]         = centro_ci
+   df.attrs["destino_ci"]        = destino_ci
+   df.attrs["nombre_destino_ci"] = nombre_destino_ci
+   df.attrs["precio_ci"]         = precio_ci
+   df.attrs["um_precio_ci"]      = um_precio_ci
+   df.attrs["col_offset"]        = 0
+   df.attrs["is_extraccion"]     = True
+   print(f"   TRAOPE (extraccion): {len(df)} registros")
+   return df
+
+
+def parse_mp_extraccion(raw: pd.DataFrame) -> pd.DataFrame:
+   """
+   Parsea la hoja PVTA_MAT VK13 (MP) del archivo consolidado.
+
+   Columnas de origen: Clase Cond., Org. Ventas, Shipfrom, Centro,
+   Destinatario, Material, Inicio Validez, Valido a, Modif_Date, Importe,
+   Unidad, Ruta. Se mapean a los mismos nombres normalizados que usa el
+   resto del pipeline (sf, cedis, destino, material, importe_mp, um, ...)
+   para no tener que tocar las funciones de cruce ni de escritura.
+   """
+   _require_columns(raw, ["Shipfrom", "Centro", "Destinatario", "Material",
+                           "Importe", "Unidad", "Inicio Validez", "Valido a"], "PVTA_MAT VK13")
+   df = pd.DataFrame({
+       "sf":              raw["Shipfrom"].apply(str_val),
+       "cedis":           raw["Centro"].apply(str_val),
+       "destino":         raw["Destinatario"].apply(str_val),
+       "nombre_destino":  "",
+       "material":        raw["Material"].apply(str_val),
+       "nombre_material": "",
+       "importe_mp":      raw["Importe"],
+       "moneda":          "",
+       "cantidad":        None,
+       "um":              raw["Unidad"].apply(str_val),
+       "sin_nombre":      "",
+       "inicio_vig":      raw["Inicio Validez"].apply(date_str),
+       "fin_vig":         raw["Valido a"].apply(date_str),
+   })
+   df.attrs["is_vertical"] = False
+   print(f"   MP (extraccion): {len(df)} registros")
+   return df
+
+
+def parse_flete_extraccion(raw: pd.DataFrame) -> pd.DataFrame:
+   """
+   Parsea la hoja PVTA_FTE VK13 (Flete) del archivo consolidado.
+
+   Columnas de origen: Clase Cond., Org. Ventas, Shipfrom, Centro,
+   Destinatario, Cond. Expedicion, Material, Inicio Validez, Fin Validez,
+   Modif_Date, Importe, Unidad, Ruta. Se marca `is_vertical=True` para
+   reutilizar tal cual el layout normalizado que ya escribe
+   `write_flete_sheet` (Concat1, SF, Cedis, Destino, Cond.Exp., Material,
+   ..., Importe Flete), que es el mismo que esperan las formulas VLOOKUP
+   fijas ($A:$E y $A:$J) del archivo "Con Formulas".
+   """
+   _require_columns(raw, ["Shipfrom", "Centro", "Destinatario", "Cond. Expedición", "Material",
+                           "Importe", "Unidad", "Inicio Validez", "Fin Validez"], "PVTA_FTE VK13")
+   df = pd.DataFrame({
+       "sf":              raw["Shipfrom"].apply(str_val),
+       "cedis":           raw["Centro"].apply(str_val),
+       "destino":         raw["Destinatario"].apply(str_val),
+       "nombre_destino":  "",
+       "material":        raw["Material"].apply(str_val),
+       "nombre_material": "",
+       "cond_exp":        raw["Cond. Expedición"].apply(str_val),
+       "importe_flete":   raw["Importe"],
+       "moneda":          "",
+       "cantidad":        None,
+       "um":              raw["Unidad"].apply(str_val),
+       "sin_nombre":      "",
+       "inicio_vig":      raw["Inicio Validez"].apply(date_str),
+       "fin_vig":         raw["Fin Validez"].apply(date_str),
+   })
+   df.attrs["is_vertical"] = True
+   print(f"   Flete (extraccion): {len(df)} registros")
+   return df
+
+
+def parse_materiales_extraccion(raw: pd.DataFrame) -> pd.DataFrame:
+   """
+   Parsea la hoja PESO_VOL (Materiales) del archivo consolidado.
+
+   A diferencia del catalogo crudo de SAP (donde el script recalculaba
+   PV = Contador / Denom y filtraba Denom=1000), esta hoja ya trae el PV
+   correcto y unico por material en la columna "Cant. UMB" (columna E) —
+   por instruccion explicita se usa ese valor tal cual, sin recalcular.
+   """
+   _require_columns(raw, ["Material", "Cant. UMB", "Texto de material"], "PESO_VOL")
+   df = pd.DataFrame({
+       "material": raw["Material"].apply(str_val),
+       "tp_mt":    raw["TpMt"].apply(str_val) if "TpMt" in raw.columns else "",
+       "denom":    "1000",
+       "uma":      raw["UMA"].apply(str_val) if "UMA" in raw.columns else "",
+       "contador": raw["Cant. UMA"] if "Cant. UMA" in raw.columns else None,
+       "umb":      raw["UMB"].apply(str_val) if "UMB" in raw.columns else "",
+       "pv":       raw["Cant. UMB"],
+       "nombre":   raw["Texto de material"].apply(str_val),
+   })
+   df = df[df["material"] != ""].reset_index(drop=True)
+   print(f"   Materiales (extraccion): {len(df)} registros")
+   return df
+
+
+def write_traope_sheet_extraccion(ws, traope_df: pd.DataFrame):
+   """
+   Escribe el sub-sheet TRAOPE a partir del DataFrame ya parseado en memoria
+   (sin releer el archivo de origen, a diferencia de `write_traope_sheet`):
+   Concat1 en la columna A y, a partir de B, todas las columnas originales
+   de la hoja CONT_COMPRA TRAOPE en su mismo orden.
+   """
+   original_cols = [c for c in traope_df.columns if c not in ("concat1", "concat2")]
+
+   hdr_cell = ws.cell(row=1, column=1)
+   hdr_cell.value = "Concat1"
+   _apply(hdr_cell, font=FONT_HDR, fill=_fill(CLR_HEADER), alignment=ALIGN_CTR, border=BORDER)
+
+   for out_col, hdr_name in enumerate(original_cols, start=2):
+       cell = ws.cell(row=1, column=out_col)
+       cell.value = str(hdr_name)
+       _apply(cell, font=FONT_HDR, fill=_fill(CLR_HEADER), alignment=ALIGN_CTR, border=BORDER)
+
+   for out_row, (_, row) in enumerate(traope_df.iterrows(), start=2):
+       ws.cell(row=out_row, column=1).value = row["concat1"]
+       for out_col, hdr_name in enumerate(original_cols, start=2):
+           v = row[hdr_name]
+           if isinstance(v, (pd.Timestamp, datetime)):
+               v = v.strftime("%d.%m.%Y")
+           elif not isinstance(v, str) and pd.isna(v):
+               v = None
+           ws.cell(row=out_row, column=out_col).value = v
+
+   ws.column_dimensions["A"].width = 35
+   for i in range(2, len(original_cols) + 2):
+       ws.column_dimensions[get_column_letter(i)].width = 14
+   ws.freeze_panes = "B2"
+
+
+# ═══════════════════════════════════════════════════════════
 #  CONSTRUCCION COMPLETA DEL LIBRO
 # ═══════════════════════════════════════════════════════════
 
@@ -1600,7 +1974,7 @@ def build_workbook(
 
 
    if formula_mode:
-       build_main_sheet_formulas(ws_main, mp_df, flete_lkp, traope_lkp, mat_lkp)
+       build_main_sheet_formulas(ws_main, mp_df, flete_lkp, traope_lkp, mat_lkp, traope_df)
    else:
        build_main_sheet_values(ws_main, mp_df, flete_lkp, traope_lkp, mat_lkp)
 
@@ -1619,7 +1993,10 @@ def build_workbook(
 
 
    ws_tr  = wb.create_sheet("TRAOPE")
-   write_traope_sheet(ws_tr, raw_files["traope"], traope_df)
+   if traope_df.attrs.get("is_extraccion"):
+       write_traope_sheet_extraccion(ws_tr, traope_df)
+   else:
+       write_traope_sheet(ws_tr, raw_files["traope"], traope_df)
 
 
    return wb
@@ -1630,6 +2007,64 @@ def build_workbook(
 # ═══════════════════════════════════════════════════════════
 #  CLI PRINCIPAL
 # ═══════════════════════════════════════════════════════════
+
+
+def run_extraccion(fuente: Path, output: Optional[Path], cedis_filter: Optional[str],
+                    cache_dir: Optional[Path] = None, force_refresh: bool = False):
+   """
+   Genera Base(s) Cedis a partir del archivo consolidado (Snowflake) que trae
+   las 4 hojas (CONT_COMPRA TRAOPE, PVTA_MAT VK13, PVTA_FTE VK13, PESO_VOL)
+   ya resumidas para TODOS los CEDIS en un solo libro.
+
+   Si `cedis_filter` viene dado, genera solo ese CEDIS; si no, genera uno
+   por cada CEDIS distinto encontrado en la hoja de MP.
+   """
+   data = load_extraccion_cached(fuente, cache_dir=cache_dir, force_refresh=force_refresh)
+   traope_full = data["traope"]
+   mp_full     = data["mp"]
+   flete_full  = data["flete"]
+   mat_df      = data["materiales"]
+
+   if cedis_filter:
+       cedis_list = [cedis_filter.upper()]
+   else:
+       cedis_list = sorted(c for c in mp_full["cedis"].unique() if c)
+
+   print(f"\nCEDIS a generar ({len(cedis_list)}): {', '.join(cedis_list)}")
+
+   out_base = output if output else fuente.parent / "MatrizVentas_Generado"
+   raw_files_stub = {"mp": fuente, "flete": fuente, "traope": fuente, "materiales": fuente}
+
+   generados = []
+   for cedis in cedis_list:
+       mp_c = mp_full[mp_full["cedis"] == cedis].reset_index(drop=True)
+       if mp_c.empty:
+           print(f"\n{cedis}: sin registros en MP, se omite.")
+           continue
+
+       traope_c = traope_full[traope_full["Centro"].apply(str_val) == cedis].reset_index(drop=True)
+       traope_c.attrs = dict(traope_full.attrs)
+
+       flete_c = flete_full[flete_full["cedis"] == cedis].reset_index(drop=True)
+       flete_c.attrs = dict(flete_full.attrs)
+
+       print(f"\n{cedis}: MP={len(mp_c)}  TRAOPE={len(traope_c)}  Flete={len(flete_c)}")
+
+       out_dir = out_base / cedis / "salidas"
+       out_dir.mkdir(parents=True, exist_ok=True)
+
+       out_formulas = out_dir / f"Base Cedis {cedis} (Con Formulas).xlsx"
+       wb_f = build_workbook(mp_c, flete_c, traope_c, mat_df, cedis, raw_files_stub, formula_mode=True)
+       wb_f.save(out_formulas)
+
+       out_clean = out_dir / f"Base Cedis {cedis}.xlsx"
+       wb_c = build_workbook(mp_c, flete_c, traope_c, mat_df, cedis, raw_files_stub, formula_mode=False)
+       wb_c.save(out_clean)
+
+       print(f"  Guardado: {out_dir}")
+       generados.append(cedis)
+
+   print(f"\nListo. {len(generados)} CEDIS generados en: {out_base}")
 
 
 def main():
@@ -1648,9 +2083,30 @@ Ejemplos:
    parser.add_argument("--flete",       metavar="FILE", help="Archivo de Fletes")
    parser.add_argument("--traope",      metavar="FILE", help="Archivo TRAOPE")
    parser.add_argument("--materiales",  metavar="FILE", help="Catalogo de Materiales")
+   parser.add_argument("--fuente",      metavar="ARCHIVO",
+                        help="Archivo consolidado (Snowflake) con las hojas CONT_COMPRA TRAOPE, "
+                             "PVTA_MAT VK13, PVTA_FTE VK13 y PESO_VOL. Si se usa, genera un Base "
+                             "Cedis por cada CEDIS encontrado (o solo el indicado con --cedis).")
    parser.add_argument("--output", "-o",metavar="DIR",  help="Carpeta de salida (default: carpeta de entrada)")
-   parser.add_argument("--cedis",       metavar="CODE", help="Codigo CEDIS, ej: DW88 (auto-detectado si se omite)")
+   parser.add_argument("--cedis",       metavar="CODE", help="Codigo CEDIS, ej: DW88 (auto-detectado si se omite; "
+                                                              "con --fuente, filtra a un solo CEDIS)")
+   parser.add_argument("--cache-dir",   metavar="DIR",
+                        help="Carpeta para el cache del archivo --fuente ya parseado "
+                             "(default: carpeta '.matrizventas_cache' junto al archivo fuente)")
+   parser.add_argument("--refresh-cache", action="store_true",
+                        help="Ignora el cache y vuelve a leer/parsear el archivo --fuente completo "
+                             "(usar cuando se sabe que el archivo fuente se acaba de actualizar)")
    args = parser.parse_args()
+
+
+   if args.fuente:
+       fuente = Path(args.fuente)
+       if not fuente.is_file():
+           parser.error(f"El archivo no existe: {fuente}")
+       run_extraccion(fuente, Path(args.output) if args.output else None, args.cedis,
+                       cache_dir=Path(args.cache_dir) if args.cache_dir else None,
+                       force_refresh=args.refresh_cache)
+       return
 
 
    # ── Detectar archivos ──
