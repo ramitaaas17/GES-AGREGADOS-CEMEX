@@ -513,11 +513,17 @@ def procesar_datos(data, cedis=None, modo_a=True):
             imp_flete = f_row['Importe'] if f_row is not None else None
             um_venta = row.get('Unidad', '')
             
-            imp_costo = None
+            imp_costo_total = None
+            imp_flete_compra = None
+            mp_compra = None
             um_costo = None
+            
             if t_row is not None:
                 if 'Precio neto pedido' in t_row.index:
-                    imp_costo = pd.to_numeric(t_row['Precio neto pedido'], errors='coerce')
+                    imp_costo_total = pd.to_numeric(t_row['Precio neto pedido'], errors='coerce')
+                if 'Importe Condición' in t_row.index and pd.notna(t_row['Importe Condición']):
+                    imp_flete_compra = pd.to_numeric(t_row['Importe Condición'], errors='coerce')
+                    
                 if 'UM Precio Pedido' in t_row.index and pd.notna(t_row['UM Precio Pedido']):
                     um_costo = str(t_row['UM Precio Pedido']).strip()
                 elif 'UM' in t_row.index and pd.notna(t_row['UM']):
@@ -525,20 +531,27 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 elif 'UMB' in t_row.index and pd.notna(t_row['UMB']):
                     um_costo = str(t_row['UMB']).strip()
                     
+                # Calcular Costo MP Compra puro (descontando componente de flete/condición)
+                if imp_costo_total is not None:
+                    if imp_flete_compra is not None and imp_flete_compra > 0 and imp_costo_total > imp_flete_compra:
+                        mp_compra = imp_costo_total - imp_flete_compra
+                    else:
+                        mp_compra = imp_costo_total
+                        
             # Clasificación Tipo de Operación
-            if imp_costo is not None and imp_costo > 0:
+            if imp_costo_total is not None and imp_costo_total > 0:
                 tipo_operacion = 'TRADING'
             else:
                 tipo_operacion = 'CANTERAS PROPIAS'
                 
-            # Cálculos de Márgenes y Gobernanza
-            mop = calc_mop(imp_mp, um_venta, imp_costo, um_costo, pv_val)
+            # Cálculos de Márgenes y Gobernanza (MOP exclusivamente sobre Material)
+            mop = calc_mop(imp_mp, um_venta, mp_compra, um_costo, pv_val)
             precio_ref = precios_ref_mat.get(mat, imp_mp)
             nivel_aut = eval_autorizacion(tipo_operacion, imp_mp, precio_ref, mop)
             
             # Validaciones Integrales
             val1 = calc_validacion1(um_venta, um_costo, cond_exp, imp_mp, imp_flete, pv_val)
-            val2 = calc_validacion2(imp_costo, val1)
+            val2 = calc_validacion2(imp_costo_total, val1)
             
             # Armado de fila con precio junto a cada condición
             fila_dict = {
@@ -564,10 +577,12 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 'Importe Flete': imp_flete,
                 'Cond. Expedición': cond_exp,
                 
-                # COSTO
-                'Importe Costo': imp_costo,
+                # COSTO: Desglosado Total, Flete Compra y Costo Material Puro
+                'Costo Total TRAOPE': imp_costo_total,
+                'Flete Compra': imp_flete_compra,
+                'MP Compra (Costo Material)': mp_compra,
                 'UM Costo': um_costo,
-                'MOP %': mop,
+                'Margen Material (MOP %)': mop,
                 
                 # GOBERNANZA Y AUTORIZACIÓN
                 'Tipo Operación': tipo_operacion,
@@ -648,8 +663,10 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
         ('Importe Flete', FILL_VENTA, FONT_BLACK_BOLD, 14),
         ('Cond. Expedición', FILL_VENTA, FONT_BLACK_BOLD, 14),
         
-        # === CONDICIONES DE COMPRA ===
-        ('Importe Costo (TRAOPE)', FILL_COSTO, FONT_BLACK_BOLD, 18),
+        # === CONDICIONES DE COMPRA (Desglosado) ===
+        ('Costo Total TRAOPE', FILL_COSTO, FONT_BLACK_BOLD, 16),
+        ('Flete Compra', FILL_COSTO, FONT_BLACK_BOLD, 14),
+        ('MP Compra (Costo Material)', FILL_COSTO, FONT_BLACK_BOLD, 18),
         ('UM Costo', FILL_COSTO, FONT_BLACK_BOLD, 10),
         ('Margen Material (MOP %)', FILL_COSTO, FONT_BLACK_BOLD, 18),
         
@@ -678,21 +695,21 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
     ws_matriz.merge_cells(start_row=1, start_column=14, end_row=1, end_column=19)
     apply_header_style(ws_matriz.cell(row=1, column=14), "=== CONDICIONES DE VENTA ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 3. COSTO (20-22)
-    ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=22)
+    # 3. COSTO (20-24)
+    ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=24)
     apply_header_style(ws_matriz.cell(row=1, column=20), "=== CONDICIONES DE COMPRA (COSTO) ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 4. GOBERNANZA (23-25)
-    ws_matriz.merge_cells(start_row=1, start_column=23, end_row=1, end_column=25)
-    apply_header_style(ws_matriz.cell(row=1, column=23), "=== GOBERNANZA Y AUTORIZACIÓN ===", FILL_NAVY, FONT_WHITE_BOLD)
+    # 4. GOBERNANZA (25-27)
+    ws_matriz.merge_cells(start_row=1, start_column=25, end_row=1, end_column=27)
+    apply_header_style(ws_matriz.cell(row=1, column=25), "=== GOBERNANZA Y AUTORIZACIÓN ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 5. VALIDACIÓN (26-28)
-    ws_matriz.merge_cells(start_row=1, start_column=26, end_row=1, end_column=28)
-    apply_header_style(ws_matriz.cell(row=1, column=26), "=== VALIDACIÓN DE MARGEN ===", FILL_NAVY, FONT_WHITE_BOLD)
+    # 5. VALIDACIÓN (28-30)
+    ws_matriz.merge_cells(start_row=1, start_column=28, end_row=1, end_column=30)
+    apply_header_style(ws_matriz.cell(row=1, column=28), "=== VALIDACIÓN DE MARGEN ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 6. CONTRATOS (29-31)
-    ws_matriz.merge_cells(start_row=1, start_column=29, end_row=1, end_column=31)
-    apply_header_style(ws_matriz.cell(row=1, column=29), "=== CONTRATO DE VENTA ===", FILL_NAVY, FONT_WHITE_BOLD)
+    # 6. CONTRATOS (31-33)
+    ws_matriz.merge_cells(start_row=1, start_column=31, end_row=1, end_column=33)
+    apply_header_style(ws_matriz.cell(row=1, column=31), "=== CONTRATO DE VENTA ===", FILL_NAVY, FONT_WHITE_BOLD)
     
     # Fila 2: Encabezados individuales
     for col_idx, (col_name, fill, font, width) in enumerate(headers, start=1):
@@ -706,13 +723,13 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
         
     ws_matriz.freeze_panes = "A3"
     
-    # Orden exacto de columnas para el volcado
+    # Orden exacto de columnas para el volcado (33 columnas)
     cols_order = [
         'Concat1', 'Concat2', 'Sociedad', 'Ship From', 'Nombre SF',
         'Centro', 'Desc. Centro', 'Destino', 'Material', 'Denominación',
         'PV', 'Inicio Vigencia', 'Fin Vigencia',
         'Clase Cond. MP', 'Importe MP', 'UM Venta', 'Clase Cond. Flete', 'Importe Flete', 'Cond. Expedición',
-        'Importe Costo', 'UM Costo', 'MOP %',
+        'Costo Total TRAOPE', 'Flete Compra', 'MP Compra (Costo Material)', 'UM Costo', 'Margen Material (MOP %)',
         'Tipo Operación', 'Precio Referencia', 'Nivel Autorización / Alerta',
         'Validacion 1', 'Validacion 2', 'Semaforo',
         'No. Contrato Venta', 'UM Contrato', 'Precio Contrato'
@@ -736,11 +753,11 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
             
             # Formatos numéricos y alineaciones
             # Importes monetarios
-            if c_idx in [15, 18, 20, 24, 26, 27, 31]: 
+            if c_idx in [15, 18, 20, 21, 22, 26, 28, 29, 33]: 
                 cell.number_format = '$#,##0.00'
                 cell.alignment = ALIGN_RIGHT
-            # Margen MOP %
-            elif c_idx == 22:
+            # Margen MOP % (Col 24)
+            elif c_idx == 24:
                 cell.number_format = '0.0%'
                 cell.alignment = ALIGN_RIGHT
                 if isinstance(val, (int, float)) and pd.notna(val):
@@ -750,18 +767,18 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                         cell.fill = FILL_GREEN
                     else:
                         cell.fill = FILL_REGIONAL
-            # PV (Densidad)
+            # PV (Densidad, Col 11)
             elif c_idx == 11:
                 cell.number_format = '#,##0.000'
                 cell.alignment = ALIGN_RIGHT
             # Códigos y textos cortos centrados
-            elif c_idx in [3, 4, 6, 8, 9, 12, 13, 14, 16, 17, 19, 21, 23, 28, 29, 30]:
+            elif c_idx in [3, 4, 6, 8, 9, 12, 13, 14, 16, 17, 19, 23, 25, 30, 31, 32]:
                 cell.alignment = ALIGN_CENTER
             else:
                 cell.alignment = ALIGN_LEFT
                 
-            # Alertas de Gobernanza (Col 25)
-            if c_idx == 25 and isinstance(val, str):
+            # Alertas de Gobernanza (Col 27)
+            if c_idx == 27 and isinstance(val, str):
                 if 'Champion' in val:
                     cell.fill = FILL_GREEN
                 elif 'Regional' in val:
@@ -770,8 +787,8 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                     cell.fill = FILL_RED
                     cell.font = FONT_BLACK_BOLD
                     
-            # Semáforo (Col 28)
-            if c_idx == 28 and isinstance(val, str):
+            # Semáforo (Col 30)
+            if c_idx == 30 and isinstance(val, str):
                 if val in ('SIN_FLETE', 'SIN_PV', 'SIN_COSTO', 'SIN_MP'):
                     cell.fill = FILL_ORANGE
                 elif val == 'DIFERENCIA':
@@ -781,8 +798,8 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                 elif val == 'OK':
                     cell.fill = FILL_GREEN
                     
-            # Validación 2 amarilla si abs > 1
-            if c_idx == 27 and isinstance(val, (int, float)) and pd.notna(val):
+            # Validación 2 amarilla si abs > 1 (Col 29)
+            if c_idx == 29 and isinstance(val, (int, float)) and pd.notna(val):
                 if abs(val) > 1:
                     cell.fill = FILL_WARN
                     
