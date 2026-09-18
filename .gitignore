@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pkl
+
+# Carpetas de salida generadas
+_salidas_integradas/
+_test_out/
+_test_out_all/
+.matrizventas_cache/
+
+# Temporales de Excel y Windows
+~$*
+*.tmp
+.DS_Store
+Thumbs.db
+
+# VS Code / IDE
+.vscode/
+.idea/
