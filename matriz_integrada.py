@@ -1128,7 +1128,9 @@ def main():
     parser.add_argument('--mp', type=str, help="Ruta al archivo TXT de Material (Modo B)")
     parser.add_argument('--flete', type=str, help="Ruta al archivo TXT de Flete (Modo B)")
     parser.add_argument('--cedis', nargs='*', default=None, help="Uno o varios centros CEDIS (ej. D836 D838 DW66 o TODOS)")
-    parser.add_argument('--output', type=str, default="./_salidas_integradas", help="Carpeta de salida")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_out = os.path.join(script_dir, "_salidas_integradas")
+    parser.add_argument('--output', type=str, default=default_out, help="Carpeta de salida")
     parser.add_argument('--refresh-cache', action='store_true', help="Ignorar caché y reprocesar el Excel")
     
     args = parser.parse_args()

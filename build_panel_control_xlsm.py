@@ -150,14 +150,28 @@ Public Sub EjecutarProcesoPython(ByVal paramCedis As String)
     Dim wsh As Object
     Dim fso As Object
     Dim basePath As String
+    Dim outDir As String
     Dim pyScript As String
     Dim sourceFile As String
+    Dim pyExe As String
+    Dim logFile As String
     Dim cmd As String
     Dim resCode As Long
+    Dim tInicio As Date
+    
+    tInicio = Now - TimeSerial(0, 2, 0) ' Margen de 2 minutos
     
     Set fso = CreateObject("Scripting.FileSystemObject")
     basePath = ThisWorkbook.Path
+    outDir = basePath & "\\_salidas_integradas"
     pyScript = basePath & "\\matriz_integrada.py"
+    logFile = outDir & "\\vba_execution.log"
+    
+    If Not fso.FolderExists(outDir) Then
+        On Error Resume Next
+        fso.CreateFolder outDir
+        On Error GoTo 0
+    End If
     
     ' Localizar el archivo de extracción 2026
     Dim fl As Object
@@ -179,6 +193,12 @@ Public Sub EjecutarProcesoPython(ByVal paramCedis As String)
         Exit Sub
     End If
     
+    ' Detectar ejecutable de Python
+    pyExe = "C:\\Users\\coazo\\AppData\\Local\\Programs\\Python\\Python311\\python.exe"
+    If Not fso.FileExists(pyExe) Then
+        pyExe = "python"
+    End If
+    
     Dim argCedis As String
     If UCase(Trim(paramCedis)) = "TODOS" Or Trim(paramCedis) = "" Then
         argCedis = ""
@@ -186,51 +206,61 @@ Public Sub EjecutarProcesoPython(ByVal paramCedis As String)
         argCedis = " --cedis " & Trim(paramCedis)
     End If
     
-    cmd = "cmd.exe /c python """ & pyScript & """ --fuente """ & sourceFile & """" & argCedis
+    ' Comando robusto con cd al directorio base y redirección a log
+    cmd = "cmd.exe /c cd /d """ & basePath & """ && """ & pyExe & """ """ & pyScript & """ --fuente """ & sourceFile & """" & argCedis & " --output """ & outDir & """ > """ & logFile & """ 2>&1"
     
     Application.StatusBar = "Procesando matriz en Python... por favor espere."
     Set wsh = CreateObject("WScript.Shell")
-    resCode = wsh.Run(cmd, 1, True)
+    resCode = wsh.Run(cmd, 0, True)
     Application.StatusBar = False
     
-    If resCode = 0 Or resCode = 1 Then
-        Dim outDir As String
-        outDir = basePath & "\\_salidas_integradas"
-        Dim latestFile As String
-        Dim latestDate As Date
-        latestDate = #1/1/1990#
-        
-        If fso.FolderExists(outDir) Then
-            Set folderObj = fso.GetFolder(outDir)
-            For Each fl In folderObj.Files
-                If InStr(1, fl.Name, "Matriz_Precios_Integral", vbTextCompare) > 0 _
-                   And Left(fl.Name, 2) <> "~$" _
-                   And LCase(fso.GetExtensionName(fl.Name)) = "xlsx" _
-                   And fl.DateLastModified > latestDate Then
-                    latestDate = fl.DateLastModified
-                    latestFile = fl.Path
-                End If
-            Next fl
-        End If
-        
-        If latestFile <> "" Then
-            Dim resp As VbMsgBoxResult
-            resp = MsgBox("¡Matriz y Dashboard generados exitosamente!" & vbCrLf & vbCrLf & _
-                          "Archivo: " & fso.GetFileName(latestFile) & vbCrLf & vbCrLf & _
-                          "¿Desea abrir el reporte ahora?", vbInformation + vbYesNo, "CEMEX Matriz de Ventas")
-            If resp = vbYes Then
-                On Error Resume Next
-                Workbooks.Open latestFile
-                If Err.Number <> 0 Then
-                    MsgBox "No se pudo abrir automáticamente el archivo (" & Err.Description & "). Puede abrirlo directamente desde la carpeta _salidas_integradas.", vbInformation, "CEMEX"
-                End If
-                On Error GoTo 0
+    ' Buscar el archivo recién generado
+    Dim latestFile As String
+    Dim latestDate As Date
+    latestDate = tInicio
+    
+    If fso.FolderExists(outDir) Then
+        Set folderObj = fso.GetFolder(outDir)
+        For Each fl In folderObj.Files
+            If InStr(1, fl.Name, "Matriz_Precios_Integral", vbTextCompare) > 0 _
+               And Left(fl.Name, 2) <> "~$" _
+               And LCase(fso.GetExtensionName(fl.Name)) = "xlsx" _
+               And fl.DateLastModified >= latestDate Then
+                latestDate = fl.DateLastModified
+                latestFile = fl.Path
             End If
-        Else
-            MsgBox "Proceso finalizado. Revise la carpeta _salidas_integradas.", vbInformation, "CEMEX Listo"
+        Next fl
+    End If
+    
+    If latestFile <> "" Then
+        Dim resp As VbMsgBoxResult
+        resp = MsgBox("¡Matriz y Dashboard generados exitosamente!" & vbCrLf & vbCrLf & _
+                      "Archivo: " & fso.GetFileName(latestFile) & vbCrLf & vbCrLf & _
+                      "¿Desea abrir el reporte ahora?", vbInformation + vbYesNo, "CEMEX Matriz de Ventas")
+        If resp = vbYes Then
+            On Error Resume Next
+            Dim wbNew As Workbook
+            Set wbNew = Workbooks.Open(latestFile)
+            If Err.Number <> 0 Then
+                ' Fallback: Abrir en proceso externo de Excel si hay conflicto interno
+                wsh.Run "explorer.exe """ & latestFile & """"
+            End If
+            On Error GoTo 0
         End If
     Else
-        MsgBox "Hubo un problema al ejecutar Python. Verifique la consola.", vbExclamation, "CEMEX Advertencia"
+        Dim logContent As String
+        logContent = ""
+        If fso.FileExists(logFile) Then
+            On Error Resume Next
+            Dim ts As Object
+            Set ts = fso.OpenTextFile(logFile, 1)
+            logContent = ts.ReadAll
+            ts.Close
+            On Error GoTo 0
+        End If
+        MsgBox "No se pudo generar el archivo de matriz." & vbCrLf & vbCrLf & _
+               "Detalle del proceso:" & vbCrLf & _
+               IIf(logContent <> "", Left(logContent, 600), "Código de salida: " & resCode), vbCritical, "CEMEX Error de Generación"
     End If
 End Sub
 '''
