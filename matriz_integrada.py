@@ -165,7 +165,11 @@ def calc_mop(importe_mp, um_venta, mp_compra, um_costo, pv):
         else:
             return None
             
-    return (importe_mp - costo_homo) / importe_mp
+    mop_val = (importe_mp - costo_homo) / importe_mp
+    mop_round = round(mop_val, 4)
+    if abs(mop_round) < 0.0005:
+        return 0.0
+    return mop_round
 
 def eval_autorizacion(tipo_operacion, precio_venta, precio_referencia, mop):
     """
