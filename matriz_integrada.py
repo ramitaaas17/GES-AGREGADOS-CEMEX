@@ -202,8 +202,10 @@ def eval_semaforo(row):
             return 'SIN_FLETE'
             
     tipo_op = row.get('Tipo Operación', '')
-    costo = row.get('Importe Costo') if 'Importe Costo' in row else row.get('Importe_Costo')
-    if tipo_op == 'TRADING' and pd.isna(costo):
+    costo = row.get('Costo Total TRAOPE') if 'Costo Total TRAOPE' in row else row.get('MP Compra (Costo Material)')
+    if costo is None or pd.isna(costo):
+        costo = row.get('Importe Costo')
+    if tipo_op == 'TRADING' and (pd.isna(costo) or costo is None or costo <= 0):
         return 'SIN_COSTO'
         
     if pd.isna(row.get('Validacion 1')):
@@ -539,7 +541,8 @@ def procesar_datos(data, cedis=None, modo_a=True):
                         mp_compra = imp_costo_total
                         
             # Clasificación Tipo de Operación
-            if imp_costo_total is not None and imp_costo_total > 0:
+            nombre_sf_upper = str(t_row['Nombre SF'] if t_row is not None and 'Nombre SF' in t_row.index else '').upper()
+            if (imp_costo_total is not None and imp_costo_total > 0) or 'TP-' in nombre_sf_upper or 'SF TP' in nombre_sf_upper or 'TC-' in nombre_sf_upper:
                 tipo_operacion = 'TRADING'
             else:
                 tipo_operacion = 'CANTERAS PROPIAS'
