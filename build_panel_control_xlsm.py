@@ -203,7 +203,10 @@ Public Sub EjecutarProcesoPython(ByVal paramCedis As String)
         If fso.FolderExists(outDir) Then
             Set folderObj = fso.GetFolder(outDir)
             For Each fl In folderObj.Files
-                If InStr(1, fl.Name, "Matriz_Precios_Integral", vbTextCompare) > 0 And fl.DateLastModified > latestDate Then
+                If InStr(1, fl.Name, "Matriz_Precios_Integral", vbTextCompare) > 0 _
+                   And Left(fl.Name, 2) <> "~$" _
+                   And LCase(fso.GetExtensionName(fl.Name)) = "xlsx" _
+                   And fl.DateLastModified > latestDate Then
                     latestDate = fl.DateLastModified
                     latestFile = fl.Path
                 End If
@@ -216,7 +219,12 @@ Public Sub EjecutarProcesoPython(ByVal paramCedis As String)
                           "Archivo: " & fso.GetFileName(latestFile) & vbCrLf & vbCrLf & _
                           "¿Desea abrir el reporte ahora?", vbInformation + vbYesNo, "CEMEX Matriz de Ventas")
             If resp = vbYes Then
+                On Error Resume Next
                 Workbooks.Open latestFile
+                If Err.Number <> 0 Then
+                    MsgBox "No se pudo abrir automáticamente el archivo (" & Err.Description & "). Puede abrirlo directamente desde la carpeta _salidas_integradas.", vbInformation, "CEMEX"
+                End If
+                On Error GoTo 0
             End If
         Else
             MsgBox "Proceso finalizado. Revise la carpeta _salidas_integradas.", vbInformation, "CEMEX Listo"
