@@ -17,23 +17,30 @@ from openpyxl.utils import get_column_letter
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # =============================================================================
-# COLORES CEMEX Y ESTILOS OPENPYXL
+# PALETA DE COLORES CORPORATIVA CEMEX
 # =============================================================================
-CLR_NAVY        = '002D72'  # Azul CEMEX Primario
+CLR_NAVY        = '002D72'  # Azul CEMEX Principal
+CLR_BLUE_ACCENT = '005A9C'  # Azul Secundario
 CLR_VENTA       = 'BDD7EE'  # Azul claro - columnas de venta
 CLR_COSTO       = 'FCE4D6'  # Salmón claro - columnas de costo
 CLR_GOB         = 'E7E6E6'  # Gris plata - gobernanza y autorizaciones
 CLR_VAL         = 'E2EFDA'  # Verde claro - validaciones de margen
 CLR_CONTRATO    = 'FFF2CC'  # Amarillo claro - contratos de venta
-CLR_WARN        = 'FFFF00'  # Amarillo - diferencia > 1
+CLR_WARN        = 'FFFF00'  # Amarillo alerta - diferencia > 1
 CLR_RED         = 'FFC7CE'  # Rojo suave - alerta nacional / fuera de rango
+CLR_DARK_RED    = '9C0006'  # Texto rojo oscuro
 CLR_ORANGE      = 'FCE4D6'  # Naranja suave - dato faltante
 CLR_GREEN       = 'C6EFCE'  # Verde éxito - Champion
+CLR_DARK_GREEN  = '006100'  # Texto verde oscuro
 CLR_REGIONAL    = 'FFF2CC'  # Amarillo suave - Regional
+CLR_DARK_YEL    = '9C6500'  # Texto amarillo oscuro
 CLR_HEADER      = 'D9D9D9'  # Gris - encabezados normales
+CLR_CARD_BG     = 'F8FAFC'  # Fondo tarjetas KPI
+CLR_CARD_BOR    = 'CBD5E1'  # Borde tarjetas
 CLR_WHITE       = 'FFFFFF'
 
 FILL_NAVY       = PatternFill(start_color=CLR_NAVY, end_color=CLR_NAVY, fill_type='solid')
+FILL_BLUE_ACC   = PatternFill(start_color=CLR_BLUE_ACCENT, end_color=CLR_BLUE_ACCENT, fill_type='solid')
 FILL_VENTA      = PatternFill(start_color=CLR_VENTA, end_color=CLR_VENTA, fill_type='solid')
 FILL_COSTO      = PatternFill(start_color=CLR_COSTO, end_color=CLR_COSTO, fill_type='solid')
 FILL_GOB        = PatternFill(start_color=CLR_GOB, end_color=CLR_GOB, fill_type='solid')
@@ -45,21 +52,34 @@ FILL_ORANGE     = PatternFill(start_color=CLR_ORANGE, end_color=CLR_ORANGE, fill
 FILL_GREEN      = PatternFill(start_color=CLR_GREEN, end_color=CLR_GREEN, fill_type='solid')
 FILL_REGIONAL   = PatternFill(start_color=CLR_REGIONAL, end_color=CLR_REGIONAL, fill_type='solid')
 FILL_HEADER     = PatternFill(start_color=CLR_HEADER, end_color=CLR_HEADER, fill_type='solid')
+FILL_CARD_BG    = PatternFill(start_color=CLR_CARD_BG, end_color=CLR_CARD_BG, fill_type='solid')
 FILL_WHITE      = PatternFill(start_color=CLR_WHITE, end_color=CLR_WHITE, fill_type='solid')
 
+FONT_WHITE_HERO = Font(color=CLR_WHITE, bold=True, name='Segoe UI', size=13)
+FONT_WHITE_SUB  = Font(color='CBD5E1', bold=False, name='Segoe UI', size=8.5)
 FONT_WHITE_BOLD = Font(color=CLR_WHITE, bold=True, name='Calibri', size=10)
 FONT_BLACK_BOLD = Font(color='000000', bold=True, name='Calibri', size=10)
 FONT_NORMAL     = Font(color='000000', name='Calibri', size=9)
+FONT_KPI_TITLE  = Font(color='475569', bold=True, name='Segoe UI', size=7.5)
+FONT_KPI_VAL    = Font(color=CLR_NAVY, bold=True, name='Segoe UI', size=16)
+FONT_KPI_SUB    = Font(color='64748B', bold=False, name='Segoe UI', size=7)
 
 ALIGN_CENTER    = Alignment(horizontal='center', vertical='center')
 ALIGN_LEFT      = Alignment(horizontal='left', vertical='center')
 ALIGN_RIGHT     = Alignment(horizontal='right', vertical='center')
 
 THIN_BORDER = Border(
-    left=Side(style='thin', color='D9D9D9'), 
-    right=Side(style='thin', color='D9D9D9'), 
-    top=Side(style='thin', color='D9D9D9'), 
-    bottom=Side(style='thin', color='D9D9D9')
+    left=Side(style='thin', color='CBD5E1'), 
+    right=Side(style='thin', color='CBD5E1'), 
+    top=Side(style='thin', color='CBD5E1'), 
+    bottom=Side(style='thin', color='CBD5E1')
+)
+
+CARD_BORDER = Border(
+    left=Side(style='thin', color=CLR_CARD_BOR), 
+    right=Side(style='thin', color=CLR_CARD_BOR), 
+    top=Side(style='thin', color=CLR_CARD_BOR), 
+    bottom=Side(style='thin', color=CLR_CARD_BOR)
 )
 
 # =============================================================================
@@ -105,11 +125,11 @@ def calc_validacion2(importe_costo, validacion1):
         return None
     return importe_costo - validacion1
 
-def calc_mop(importe_mp, um_venta, importe_costo, um_costo, pv):
+def calc_mop(importe_mp, um_venta, mp_compra, um_costo, pv):
     """
     Margen Operativo de Material (MOP %):
-    MOP = (Precio Venta MP - Costo Compra MP Homologado) / Precio Venta MP
-    Fórmula oficial de Excel:
+    MOP = (Precio Venta MP - MP Compra Puro Homologado) / Precio Venta MP
+    Fórmula oficial:
     =@SI.CONJUNTO(
         [UM COMP]="M3", SI([MP COMP]=0, 0, ([MP VTA]-[MP COMP])/[MP VTA]),
         [UM COMP]="TN", SI([MP COMP]=0, 0, ([MP VTA]-[MP COMP])/[MP VTA])
@@ -117,23 +137,23 @@ def calc_mop(importe_mp, um_venta, importe_costo, um_costo, pv):
     """
     if pd.isna(importe_mp) or importe_mp <= 0:
         return None
-    if pd.isna(importe_costo) or importe_costo <= 0:
+    if pd.isna(mp_compra) or mp_compra <= 0:
         return None
         
     um_v = str(um_venta).strip().upper() if pd.notna(um_venta) else ""
     um_c = str(um_costo).strip().upper() if pd.notna(um_costo) else ""
     
-    costo_homo = importe_costo
+    costo_homo = mp_compra
     if um_v == um_c:
-        costo_homo = importe_costo
+        costo_homo = mp_compra
     elif um_v == 'TN' and um_c == 'M3':
         if pd.notna(pv) and pv > 0:
-            costo_homo = importe_costo / pv
+            costo_homo = mp_compra / pv
         else:
             return None
     elif um_v == 'M3' and um_c == 'TN':
         if pd.notna(pv) and pv > 0:
-            costo_homo = importe_costo * pv
+            costo_homo = mp_compra * pv
         else:
             return None
             
@@ -150,7 +170,7 @@ def eval_autorizacion(tipo_operacion, precio_venta, precio_referencia, mop):
        
     2. TRADING:
        - Si Margen_Material > 8% -> 'Autoriza: Champion'
-       - Si Margen_Material entre 5% y 7.99% -> 'Autoriza: Regional'
+       - Si Margen_Material entre 5% y 8% -> 'Autoriza: Regional'
        - Si Margen_Material < 5% -> 'Alerta Fuera de Rango: Requiere revision puntual con Nacional'
     """
     if tipo_operacion == 'TRADING':
@@ -188,6 +208,7 @@ def eval_semaforo(row):
     - SIN_PV: falta factor de peso volumétrico
     - DIFERENCIA: desviación mayor a $1 entre costo real y teórico
     - DISCREPANCIA_ORG: condición inválida por sociedad
+    - OK: registro correcto y alineado
     """
     mp = row.get('Importe MP') if 'Importe MP' in row else row.get('Importe_MP')
     if pd.isna(mp) or mp <= 0:
@@ -393,7 +414,7 @@ def parse_txt(archivo_txt):
     return df
 
 # =============================================================================
-# PROCESAMIENTO Y CRUCE UNIFICADO
+# PROCESAMIENTO Y CRUCE UNIFICADO MULTI-CEDIS
 # =============================================================================
 
 def procesar_datos(data, cedis=None, modo_a=True):
@@ -430,8 +451,18 @@ def procesar_datos(data, cedis=None, modo_a=True):
             df['Concat1'] = df['Shipfrom'] + '-' + df['Centro'] + '-' + df['Destinatario'] + '-' + df['Material']
             df['Concat2'] = df['Shipfrom'] + '-' + df['Centro'] + '-' + df['Material']
             
+        # Filtro Multi-CEDIS flexible
         if cedis:
-            df_mp = df_mp[df_mp['Centro'] == cedis]
+            if isinstance(cedis, (list, tuple)):
+                cedis_list = [str(c).strip().upper() for c in cedis if str(c).strip().upper() not in ('TODOS', '')]
+            elif isinstance(cedis, str):
+                cedis_list = [str(c).strip().upper() for c in cedis.replace(',', ' ').split() if str(c).strip().upper() not in ('TODOS', '')]
+            else:
+                cedis_list = [str(cedis).strip().upper()]
+                
+            if cedis_list:
+                df_mp = df_mp[df_mp['Centro'].isin(cedis_list)]
+                logging.info(f"Filtrando por CEDIS seleccionados ({len(cedis_list)}): {cedis_list}")
             
         if df_mp.empty:
             logging.warning("El archivo está vacío o sin datos vigentes para MP.")
@@ -504,7 +535,6 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 cond_exp = str(co_row['Condición Exp.']).strip()
                 
             # 4. TRAOPE (Costo de Compra)
-            # Match Concat1 exacto; si no, Concat2 de respaldo si no es entrega directa estricta
             t_row = None
             if c1 in traope_c1.index:
                 t_row = traope_c1.loc[c1]
@@ -613,7 +643,7 @@ def procesar_datos(data, cedis=None, modo_a=True):
         return pd.DataFrame(), None, None, None, None
 
 # =============================================================================
-# ESCRITURA EN EXCEL FORMATEADO
+# CONSTRUCCIÓN DEL DASHBOARD EJECUTIVO PREMIUM (ESTILO CEMEX UI)
 # =============================================================================
 
 def apply_header_style(cell, text, fill, font):
@@ -623,26 +653,298 @@ def apply_header_style(cell, text, fill, font):
     cell.alignment = ALIGN_CENTER
     cell.border = THIN_BORDER
 
+def dibujar_tarjeta_kpi(ws, col_ini, col_fin, titulo, valor_str, subtitulo, accent_fill, val_font=None):
+    """Dibuja una tarjeta KPI corporativa con barra de acento superior y sombra sutil."""
+    # Fila 5: Barra de Acento Superior (3.5 pt)
+    for c in range(col_ini, col_fin + 1):
+        cell_acc = ws.cell(row=5, column=c)
+        cell_acc.fill = accent_fill
+        cell_acc.border = CARD_BORDER
+    ws.merge_cells(start_row=5, start_column=col_ini, end_row=5, end_column=col_fin)
+    
+    # Fila 6: Título
+    for c in range(col_ini, col_fin + 1):
+        cell_t = ws.cell(row=6, column=c)
+        cell_t.fill = FILL_CARD_BG
+        cell_t.border = CARD_BORDER
+    ws.merge_cells(start_row=6, start_column=col_ini, end_row=6, end_column=col_fin)
+    c_tit = ws.cell(row=6, column=col_ini, value=titulo)
+    c_tit.font = FONT_KPI_TITLE
+    c_tit.alignment = ALIGN_CENTER
+    
+    # Fila 7: Valor Principal (Grande)
+    for c in range(col_ini, col_fin + 1):
+        cell_v = ws.cell(row=7, column=c)
+        cell_v.fill = FILL_CARD_BG
+        cell_v.border = CARD_BORDER
+    ws.merge_cells(start_row=7, start_column=col_ini, end_row=7, end_column=col_fin)
+    c_val = ws.cell(row=7, column=col_ini, value=valor_str)
+    c_val.font = val_font or FONT_KPI_VAL
+    c_val.alignment = ALIGN_CENTER
+    
+    # Fila 8: Subtítulo
+    for c in range(col_ini, col_fin + 1):
+        cell_s = ws.cell(row=8, column=c)
+        cell_s.fill = FILL_CARD_BG
+        cell_s.border = CARD_BORDER
+    ws.merge_cells(start_row=8, start_column=col_ini, end_row=8, end_column=col_fin)
+    c_sub = ws.cell(row=8, column=col_ini, value=subtitulo)
+    c_sub.font = FONT_KPI_SUB
+    c_sub.alignment = ALIGN_CENTER
+
+def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
+    ws_dash = wb.create_sheet(title="Dashboard", index=0)
+    ws_dash.views.sheetView[0].showGridLines = True
+    
+    # Anchos de columna estilo App Web
+    ws_dash.column_dimensions['A'].width = 3.5    # Sidebar
+    for c in ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M']:
+        ws_dash.column_dimensions[c].width = 16.5
+        
+    # Alturas de fila
+    ws_dash.row_dimensions[1].height = 6
+    ws_dash.row_dimensions[2].height = 24
+    ws_dash.row_dimensions[3].height = 18
+    ws_dash.row_dimensions[4].height = 10
+    ws_dash.row_dimensions[5].height = 4.5  # Acento KPI
+    ws_dash.row_dimensions[6].height = 16   # Título KPI
+    ws_dash.row_dimensions[7].height = 28   # Valor KPI
+    ws_dash.row_dimensions[8].height = 16   # Subtítulo KPI
+    ws_dash.row_dimensions[9].height = 12   # Separador
+    ws_dash.row_dimensions[10].height = 22  # Header Secciones
+    ws_dash.row_dimensions[18].height = 12  # Separador
+    ws_dash.row_dimensions[19].height = 22  # Header Auditoría
+    
+    # --- 1. SIDEBAR AZUL CEMEX ---
+    for r in range(1, 60):
+        c_side = ws_dash.cell(row=r, column=1)
+        c_side.fill = FILL_NAVY
+        
+    # --- 2. HERO BANNER ---
+    for c in range(2, 14):
+        for r in (1, 2, 3):
+            ws_dash.cell(row=r, column=c).fill = FILL_NAVY
+    ws_dash.merge_cells("B2:M2")
+    ws_dash.merge_cells("B3:M3")
+    
+    c_hero_t = ws_dash.cell(row=2, column=2, value="CEMEX AGREGADOS  |  Matriz de Precios Venta vs Costo & Gobernanza")
+    c_hero_t.font = FONT_WHITE_HERO
+    c_hero_t.alignment = ALIGN_LEFT
+    
+    sub_txt = f"  CEDIS Analizados: {cedis_str}   |   Fuente: Extracción Snowflake 2026   |   Actualizado: {fecha_str}"
+    c_hero_s = ws_dash.cell(row=3, column=2, value=sub_txt)
+    c_hero_s.font = FONT_WHITE_SUB
+    c_hero_s.alignment = ALIGN_LEFT
+    
+    # --- 3. MÉTRICAS CLAVE ---
+    totales = len(df_matriz)
+    mop_validos = df_matriz['Margen Material (MOP %)'].dropna()
+    mop_prom = mop_validos.mean() if not mop_validos.empty else 0
+    auth_champion = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Champion', na=False)])
+    auth_regional = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Regional', na=False)])
+    auth_nacional = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Nacional|Alerta', na=False)])
+    
+    pct_champ = (auth_champion / totales * 100) if totales > 0 else 0
+    pct_nac = (auth_nacional / totales * 100) if totales > 0 else 0
+    
+    # 4 TARJETAS KPI MODERNAS
+    dibujar_tarjeta_kpi(ws_dash, 2, 4, "TOTAL RUTAS ANALIZADAS", f"{totales:,}", "Rutas activas en catálogo", FILL_NAVY)
+    dibujar_tarjeta_kpi(ws_dash, 5, 7, "MARGEN MATERIAL PROMEDIO", f"{mop_prom*100:.1f}%", "Ponderado sobre material puro", FILL_GREEN, Font(color=CLR_DARK_GREEN, bold=True, size=16))
+    dibujar_tarjeta_kpi(ws_dash, 8, 10, "AUTORIZACIÓN CHAMPION", f"{auth_champion} ({pct_champ:.1f}%)", "Margen > 8% / Sin Descuento", FILL_BLUE_ACC, Font(color=CLR_BLUE_ACCENT, bold=True, size=16))
+    dibujar_tarjeta_kpi(ws_dash, 11, 13, "ALERTAS NIVEL NACIONAL", f"{auth_nacional} ({pct_nac:.1f}%)", "Margen < 5% / Descuento > 5%", FILL_RED, Font(color=CLR_DARK_RED, bold=True, size=16))
+    
+    # --- 4. SECCIONES ANALÍTICAS LADO A LADO ---
+    
+    # BLOQUE IZQUIERDO: Mix de Gobernanza
+    ws_dash.merge_cells("B10:F10")
+    apply_header_style(ws_dash.cell(row=10, column=2), "ESTATUS DE GOBERNANZA Y AUTORIZACIÓN", FILL_NAVY, FONT_WHITE_BOLD)
+    
+    headers_gob = [("Nivel Autorización", 2), ("Criterio Objetivo", 3), ("Rutas", 5), ("% Total", 6)]
+    ws_dash.merge_cells("C11:D11")
+    for txt, col in headers_gob:
+        c = ws_dash.cell(row=11, column=col, value=txt)
+        c.fill = FILL_HEADER
+        c.font = FONT_BLACK_BOLD
+        c.alignment = ALIGN_CENTER
+        c.border = THIN_BORDER
+        
+    filas_gob = [
+        ("Nivel Champion", "Margen > 8% / Sin Desc.", auth_champion, pct_champ, FILL_GREEN, FONT_BLACK_BOLD),
+        ("Nivel Regional", "Margen 5% - 8% / Desc <= 5%", auth_regional, (auth_regional/totales*100) if totales>0 else 0, FILL_REGIONAL, FONT_NORMAL),
+        ("Alerta Nacional", "Margen < 5% / Desc > 5%", auth_nacional, pct_nac, FILL_RED, FONT_BLACK_BOLD)
+    ]
+    
+    for idx, (niv, crit, cant, pct, fill, f_font) in enumerate(filas_gob, start=12):
+        ws_dash.merge_cells(start_row=idx, start_column=3, end_row=idx, end_column=4)
+        c1 = ws_dash.cell(row=idx, column=2, value=niv)
+        c2 = ws_dash.cell(row=idx, column=3, value=crit)
+        c3 = ws_dash.cell(row=idx, column=5, value=cant)
+        c4 = ws_dash.cell(row=idx, column=6, value=f"{pct:.1f}%")
+        
+        for c_col in [c1, c2, c3, c4]:
+            c_col.fill = fill
+            c_col.font = f_font
+            c_col.border = THIN_BORDER
+        c1.alignment = ALIGN_LEFT
+        c2.alignment = ALIGN_LEFT
+        c3.alignment = ALIGN_CENTER
+        c4.alignment = ALIGN_CENTER
+        
+    # BLOQUE DERECHO: Top 5 Materiales por Margen
+    ws_dash.merge_cells("H10:M10")
+    apply_header_style(ws_dash.cell(row=10, column=8), "TOP 5 MATERIALES CON MAYOR MARGEN MATERIAL (MOP %)", FILL_NAVY, FONT_WHITE_BOLD)
+    
+    headers_mat = [("Material", 8), ("Denominación", 9), ("Precio Vta Prom.", 11), ("MP Compra Prom.", 12), ("MOP %", 13)]
+    ws_dash.merge_cells("I11:J11")
+    for txt, col in headers_mat:
+        c = ws_dash.cell(row=11, column=col, value=txt)
+        c.fill = FILL_HEADER
+        c.font = FONT_BLACK_BOLD
+        c.alignment = ALIGN_CENTER
+        c.border = THIN_BORDER
+        
+    # Top 5 materiales agregados
+    df_top_mat = df_matriz.groupby(['Material', 'Denominación']).agg({
+        'Importe MP': 'mean',
+        'MP Compra (Costo Material)': 'mean',
+        'Margen Material (MOP %)': 'mean'
+    }).reset_index().dropna().sort_values(by='Margen Material (MOP %)', ascending=False).head(5)
+    
+    for idx, row_m in enumerate(df_top_mat.itertuples(), start=12):
+        ws_dash.merge_cells(start_row=idx, start_column=9, end_row=idx, end_column=10)
+        c_mat = ws_dash.cell(row=idx, column=8, value=row_m.Material)
+        c_den = ws_dash.cell(row=idx, column=9, value=row_m.Denominación)
+        c_vta = ws_dash.cell(row=idx, column=11, value=row_m._3)
+        c_cmp = ws_dash.cell(row=idx, column=12, value=row_m._4)
+        c_mop = ws_dash.cell(row=idx, column=13, value=row_m._5)
+        
+        for cell_item in [c_mat, c_den, c_vta, c_cmp, c_mop]:
+            cell_item.border = THIN_BORDER
+            cell_item.font = FONT_NORMAL
+            
+        c_mat.alignment = ALIGN_CENTER
+        c_den.alignment = ALIGN_LEFT
+        c_vta.number_format = '$#,##0.00'
+        c_vta.alignment = ALIGN_RIGHT
+        c_cmp.number_format = '$#,##0.00'
+        c_cmp.alignment = ALIGN_RIGHT
+        c_mop.number_format = '0.0%'
+        c_mop.alignment = ALIGN_RIGHT
+        c_mop.fill = FILL_GREEN if (row_m._5 or 0) > 0.08 else FILL_REGIONAL
+        
+    # --- 5. TABLA DE AUDITORÍA: TOP RUTAS CON ALERTA O DESVIACIÓN ---
+    ws_dash.merge_cells("B19:M19")
+    apply_header_style(ws_dash.cell(row=19, column=2), "AUDITORÍA DE RUTAS: DESVIACIONES DE MARGEN Y ALERTAS NACIONALES (TOP 50)", FILL_NAVY, FONT_WHITE_BOLD)
+    
+    headers_aud = [
+        ("Concat1 (Ruta)", 2), ("CEDIS", 3), ("Destino", 4), ("Material", 5),
+        ("Denominación", 6), ("Precio Vta", 8), ("MP Compra", 9), ("MOP %", 10),
+        ("Nivel Autorización", 11), ("Semáforo", 12), ("Diferencia ($)", 13)
+    ]
+    ws_dash.merge_cells("F20:G20")
+    for txt, col in headers_aud:
+        c = ws_dash.cell(row=20, column=col, value=txt)
+        c.fill = FILL_HEADER
+        c.font = FONT_BLACK_BOLD
+        c.alignment = ALIGN_CENTER
+        c.border = THIN_BORDER
+        
+    anomalias = df_matriz[(df_matriz['Semaforo'] != 'OK') | (df_matriz['Nivel Autorización / Alerta'].str.contains('Alerta|Nacional', na=False))].head(50)
+    
+    for r_idx, row in enumerate(anomalias.itertuples(), start=21):
+        ws_dash.merge_cells(start_row=r_idx, start_column=6, end_row=r_idx, end_column=7)
+        c1 = ws_dash.cell(row=r_idx, column=2, value=getattr(row, 'Concat1', ''))
+        c2 = ws_dash.cell(row=r_idx, column=3, value=getattr(row, 'Centro', ''))
+        c3 = ws_dash.cell(row=r_idx, column=4, value=getattr(row, 'Destino', ''))
+        c4 = ws_dash.cell(row=r_idx, column=5, value=getattr(row, 'Material', ''))
+        c5 = ws_dash.cell(row=r_idx, column=6, value=getattr(row, 'Denominación', ''))
+        
+        c6 = ws_dash.cell(row=r_idx, column=8, value=getattr(row, '_15', getattr(row, 'Importe MP', '')))
+        c7 = ws_dash.cell(row=r_idx, column=9, value=getattr(row, '_22', getattr(row, 'MP Compra (Costo Material)', '')))
+        c8 = ws_dash.cell(row=r_idx, column=10, value=getattr(row, '_24', getattr(row, 'Margen Material (MOP %)', '')))
+        c9 = ws_dash.cell(row=r_idx, column=11, value=getattr(row, '_27', getattr(row, 'Nivel Autorización / Alerta', '')))
+        c10 = ws_dash.cell(row=r_idx, column=12, value=getattr(row, 'Semaforo', ''))
+        c11 = ws_dash.cell(row=r_idx, column=13, value=getattr(row, '_29', getattr(row, 'Validacion 2', '')))
+        
+        for c_item in [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11]:
+            c_item.border = THIN_BORDER
+            c_item.font = FONT_NORMAL
+            
+        c1.alignment = ALIGN_LEFT
+        c2.alignment = ALIGN_CENTER
+        c3.alignment = ALIGN_CENTER
+        c4.alignment = ALIGN_CENTER
+        c5.alignment = ALIGN_LEFT
+        
+        c6.number_format = '$#,##0.00'
+        c6.alignment = ALIGN_RIGHT
+        c7.number_format = '$#,##0.00'
+        c7.alignment = ALIGN_RIGHT
+        
+        if isinstance(c8.value, (int, float)):
+            c8.number_format = '0.0%'
+            c8.alignment = ALIGN_RIGHT
+            if c8.value < 0.05:
+                c8.fill = FILL_RED
+            elif c8.value > 0.08:
+                c8.fill = FILL_GREEN
+                
+        c9.alignment = ALIGN_CENTER
+        if 'Nacional' in str(c9.value) or 'Alerta' in str(c9.value):
+            c9.fill = FILL_RED
+            c9.font = FONT_BLACK_BOLD
+        elif 'Regional' in str(c9.value):
+            c9.fill = FILL_REGIONAL
+            
+        c10.alignment = ALIGN_CENTER
+        if c10.value == 'DIFERENCIA':
+            c10.fill = FILL_WARN
+        elif c10.value in ('SIN_FLETE', 'SIN_COSTO', 'SIN_PV'):
+            c10.fill = FILL_ORANGE
+        elif c10.value == 'OK':
+            c10.fill = FILL_GREEN
+            
+        if isinstance(c11.value, (int, float)):
+            c11.number_format = '$#,##0.00'
+            c11.alignment = ALIGN_RIGHT
+            if abs(c11.value) > 1:
+                c11.fill = FILL_WARN
+
+# =============================================================================
+# ESCRITURA EN EXCEL FORMATEADO
+# =============================================================================
+
 def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
     if df_matriz.empty:
         logging.error("DataFrame vacío, no se generará Excel.")
         return
         
-    fecha = datetime.now().strftime('%Y%m%d_%H%M%S')
-    cedis_str = cedis if cedis else "TODOS"
+    fecha_dt = datetime.now()
+    fecha_str = fecha_dt.strftime('%Y%m%d_%H%M%S')
+    fecha_legible = fecha_dt.strftime('%d/%m/%Y %H:%M')
+    
+    if isinstance(cedis, (list, tuple)):
+        cedis_tag = "_".join(cedis[:3]) + (f"_y_{len(cedis)-3}_mas" if len(cedis)>3 else "")
+        cedis_label = ", ".join(cedis)
+    elif cedis:
+        cedis_tag = str(cedis).replace(' ', '_').replace(',', '_')
+        cedis_label = str(cedis)
+    else:
+        cedis_tag = "TODOS"
+        cedis_label = "TODOS LOS CEDIS"
+        
     os.makedirs(out_dir, exist_ok=True)
-    out_file = os.path.join(out_dir, f"Matriz_Precios_Integral_{cedis_str}_{fecha}.xlsx")
+    out_file = os.path.join(out_dir, f"Matriz_Precios_Integral_{cedis_tag}_{fecha_str}.xlsx")
     
     logging.info(f"Escribiendo Excel: {out_file}")
     wb = openpyxl.Workbook()
     
     # -------------------------------------------------------------------------
-    # Hoja 1: Matriz
+    # Hoja 1: Matriz de Datos Detallada
     # -------------------------------------------------------------------------
     ws_matriz = wb.active
     ws_matriz.title = "Matriz"
     
-    # Definición de 31 columnas organizadas lógicamente
     headers = [
         ('Concat1', FILL_HEADER, FONT_BLACK_BOLD, 30),
         ('Concat2', FILL_HEADER, FONT_BLACK_BOLD, 25),
@@ -690,27 +992,21 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
     ]
     
     # Fila 1: Grupos Superiores Fusionados
-    # 1. RUTA (1-13)
     ws_matriz.merge_cells(start_row=1, start_column=1, end_row=1, end_column=13)
     apply_header_style(ws_matriz.cell(row=1, column=1), "=== DATOS DE RUTA Y MATERIAL ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 2. VENTA (14-19)
     ws_matriz.merge_cells(start_row=1, start_column=14, end_row=1, end_column=19)
     apply_header_style(ws_matriz.cell(row=1, column=14), "=== CONDICIONES DE VENTA ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 3. COSTO (20-24)
     ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=24)
     apply_header_style(ws_matriz.cell(row=1, column=20), "=== CONDICIONES DE COMPRA (COSTO) ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 4. GOBERNANZA (25-27)
     ws_matriz.merge_cells(start_row=1, start_column=25, end_row=1, end_column=27)
     apply_header_style(ws_matriz.cell(row=1, column=25), "=== GOBERNANZA Y AUTORIZACIÓN ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 5. VALIDACIÓN (28-30)
     ws_matriz.merge_cells(start_row=1, start_column=28, end_row=1, end_column=30)
     apply_header_style(ws_matriz.cell(row=1, column=28), "=== VALIDACIÓN DE MARGEN ===", FILL_NAVY, FONT_WHITE_BOLD)
     
-    # 6. CONTRATOS (31-33)
     ws_matriz.merge_cells(start_row=1, start_column=31, end_row=1, end_column=33)
     apply_header_style(ws_matriz.cell(row=1, column=31), "=== CONTRATO DE VENTA ===", FILL_NAVY, FONT_WHITE_BOLD)
     
@@ -755,12 +1051,10 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
             cell.border = THIN_BORDER
             
             # Formatos numéricos y alineaciones
-            # Importes monetarios
             if c_idx in [15, 18, 20, 21, 22, 26, 28, 29, 33]: 
                 cell.number_format = '$#,##0.00'
                 cell.alignment = ALIGN_RIGHT
-            # Margen MOP % (Col 24)
-            elif c_idx == 24:
+            elif c_idx == 24: # Margen MOP %
                 cell.number_format = '0.0%'
                 cell.alignment = ALIGN_RIGHT
                 if isinstance(val, (int, float)) and pd.notna(val):
@@ -770,11 +1064,9 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                         cell.fill = FILL_GREEN
                     else:
                         cell.fill = FILL_REGIONAL
-            # PV (Densidad, Col 11)
-            elif c_idx == 11:
+            elif c_idx == 11: # PV
                 cell.number_format = '#,##0.000'
                 cell.alignment = ALIGN_RIGHT
-            # Códigos y textos cortos centrados
             elif c_idx in [3, 4, 6, 8, 9, 12, 13, 14, 16, 17, 19, 23, 25, 30, 31, 32]:
                 cell.alignment = ALIGN_CENTER
             else:
@@ -807,83 +1099,12 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                     cell.fill = FILL_WARN
                     
     # -------------------------------------------------------------------------
-    # Hoja 2: Dashboard Ejecutivo
+    # Hoja 2: Dashboard Ejecutivo Premium (Hoja Inicial)
     # -------------------------------------------------------------------------
-    ws_dash = wb.create_sheet(title="Dashboard")
-    ws_dash.merge_cells("A1:G2")
-    apply_header_style(ws_dash.cell(row=1, column=1), "DASHBOARD CEMEX - MATRIZ INTEGRAL Y GOBERNANZA DE PRECIOS", FILL_NAVY, Font(color=CLR_WHITE, bold=True, size=15))
-    
-    totales = len(df_matriz)
-    vigentes = len(df_matriz[df_matriz['Fin Vigencia'] == '99991231'])
-    imp_prom = df_matriz['Importe MP'].mean() if 'Importe MP' in df_matriz and not df_matriz['Importe MP'].empty else 0
-    con_dif = len(df_matriz[df_matriz['Semaforo'] == 'DIFERENCIA'])
-    sin_flete = len(df_matriz[df_matriz['Semaforo'] == 'SIN_FLETE'])
-    sin_costo = len(df_matriz[df_matriz['Semaforo'] == 'SIN_COSTO'])
-    
-    auth_champion = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Champion', na=False)])
-    auth_regional = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Regional', na=False)])
-    auth_nacional = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Nacional', na=False)])
-    
-    kpis = [
-        ("Total Rutas Analizadas", totales),
-        ("Rutas Vigentes (Fin 9999)", vigentes),
-        ("Importe MP Promedio", f"${imp_prom:,.2f}"),
-        ("Rutas con Diferencia Margen > $1", con_dif),
-        ("Rutas Sin Flete Requerido", sin_flete),
-        ("Rutas Sin Costo TRAOPE (Trading)", sin_costo),
-        ("--- GOBERNANZA Y AUTORIZACIONES ---", ""),
-        ("Nivel Champion (Margen > 8% / Sin Descuento)", auth_champion),
-        ("Nivel Regional (Margen 5-8% / Desc <= 5%)", auth_regional),
-        ("Alerta Nivel Nacional (Margen < 5% / Desc > 5%)", auth_nacional)
-    ]
-    
-    for i, (k, v) in enumerate(kpis):
-        r = 4 + i
-        c_k = ws_dash.cell(row=r, column=2, value=k)
-        c_v = ws_dash.cell(row=r, column=3, value=v)
-        c_k.font = FONT_BLACK_BOLD
-        c_v.font = FONT_NORMAL
-        if "Alerta" in k:
-            c_v.fill = FILL_RED
-            c_v.font = FONT_BLACK_BOLD
-        elif "Champion" in k:
-            c_v.fill = FILL_GREEN
-            
-    ws_dash.cell(row=16, column=2, value="Top 50 Rutas con Alerta o Desviación").font = FONT_BLACK_BOLD
-    anomalias = df_matriz[(df_matriz['Semaforo'] != 'OK') | (df_matriz['Nivel Autorización / Alerta'].str.contains('Alerta|Nacional', na=False))].head(50)
-    
-    if not anomalias.empty:
-        for c_idx, col in enumerate(['Concat1', 'Centro', 'Material', 'MOP %', 'Nivel Autorización', 'Semáforo', 'Validación 2'], start=2):
-            cell = ws_dash.cell(row=17, column=c_idx)
-            cell.value = col
-            cell.fill = FILL_HEADER
-            cell.font = FONT_BLACK_BOLD
-            cell.alignment = ALIGN_CENTER
-            
-        for r_idx, row in enumerate(anomalias.itertuples(), start=18):
-            ws_dash.cell(row=r_idx, column=2, value=getattr(row, 'Concat1', ''))
-            ws_dash.cell(row=r_idx, column=3, value=getattr(row, 'Centro', ''))
-            ws_dash.cell(row=r_idx, column=4, value=getattr(row, 'Material', ''))
-            
-            c_mop = ws_dash.cell(row=r_idx, column=5, value=getattr(row, '_22', getattr(row, 'MOP %', '')))
-            if isinstance(c_mop.value, (int, float)):
-                c_mop.number_format = '0.0%'
-                
-            ws_dash.cell(row=r_idx, column=6, value=getattr(row, '_25', getattr(row, 'Nivel Autorización / Alerta', '')))
-            ws_dash.cell(row=r_idx, column=7, value=getattr(row, 'Semaforo', ''))
-            ws_dash.cell(row=r_idx, column=8, value=getattr(row, '_27', getattr(row, 'Validacion 2', '')))
-            
-    ws_dash.cell(row=72, column=2, value=f"Generado automáticamente el: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    ws_dash.column_dimensions['B'].width = 38
-    ws_dash.column_dimensions['C'].width = 18
-    ws_dash.column_dimensions['D'].width = 18
-    ws_dash.column_dimensions['E'].width = 16
-    ws_dash.column_dimensions['F'].width = 36
-    ws_dash.column_dimensions['G'].width = 18
-    ws_dash.column_dimensions['H'].width = 16
+    construir_dashboard_ejecutivo(wb, df_matriz, cedis_label, fecha_legible)
     
     # -------------------------------------------------------------------------
-    # Hojas Ocultas de Respaldo
+    # Hojas Ocultas de Respaldo para Auditoría
     # -------------------------------------------------------------------------
     if raw_data_frames:
         for name, df in zip(['_MP', '_Flete', '_TRAOPE', '_Contratos'], raw_data_frames):
@@ -895,9 +1116,10 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                 
     wb.save(out_file)
     logging.info(f"¡Excel guardado exitosamente!")
+    return out_file
 
 # =============================================================================
-# CLI
+# CLI Y EJECUCIÓN
 # =============================================================================
 
 def main():
@@ -905,7 +1127,7 @@ def main():
     parser.add_argument('--fuente', type=str, help="Ruta al archivo Excel .xlsm (Modo A)")
     parser.add_argument('--mp', type=str, help="Ruta al archivo TXT de Material (Modo B)")
     parser.add_argument('--flete', type=str, help="Ruta al archivo TXT de Flete (Modo B)")
-    parser.add_argument('--cedis', type=str, help="Filtro opcional por código de Centro (CEDIS)")
+    parser.add_argument('--cedis', nargs='*', default=None, help="Uno o varios centros CEDIS (ej. D836 D838 DW66 o TODOS)")
     parser.add_argument('--output', type=str, default="./_salidas_integradas", help="Carpeta de salida")
     parser.add_argument('--refresh-cache', action='store_true', help="Ignorar caché y reprocesar el Excel")
     
