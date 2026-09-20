@@ -104,7 +104,8 @@ def calc_validacion1(um_venta, um_costo, cond_exp, importe_mp, importe_flete, pv
     um_c = str(um_costo).strip().upper() if pd.notna(um_costo) else ""
     
     if um_v == 'TN' and um_c == 'TN':
-        return mp + (flete if flete is not None else 0)
+        res = mp + (flete if flete is not None else 0)
+        return round(res, 2)
     
     if pd.isna(pv):
         return None
@@ -115,15 +116,22 @@ def calc_validacion1(um_venta, um_costo, cond_exp, importe_mp, importe_flete, pv
         cond = str(cond_exp).strip() if pd.notna(cond_exp) else ''
     
     if cond == '1':
-        return pv * mp
+        res = pv * mp
     else:
-        return (mp + (flete if flete is not None else 0)) * pv
+        res = (mp + (flete if flete is not None else 0)) * pv
+    return round(res, 2)
 
 def calc_validacion2(importe_costo, validacion1):
-    """Desviación Real vs Teórico: Costo_TRAOPE - Validación_1."""
+    """
+    Desviación Real vs Teórico: Costo_TRAOPE - Validación_1.
+    Redondeado a 2 decimales con tolerancia de 5 centavos para eliminar ruido flotante.
+    """
     if pd.isna(importe_costo) or pd.isna(validacion1):
         return None
-    return importe_costo - validacion1
+    diff = round(importe_costo - validacion1, 2)
+    if abs(diff) < 0.05:
+        return 0.0
+    return diff
 
 def calc_mop(importe_mp, um_venta, mp_compra, um_costo, pv):
     """
@@ -570,9 +578,18 @@ def procesar_datos(data, cedis=None, modo_a=True):
                     else:
                         mp_compra = imp_costo_total
                         
-            # Clasificación Tipo de Operación
+            # Clasificación Oficial Tipo de Operación:
+            # - 7100 = CANTERAS PROPIAS (100% de los casos)
+            # - 7180 = TRADING
+            # - Otras sociedades: si tiene costo o prefijo TP/TC es TRADING, si no CANTERAS PROPIAS
+            sociedad_str = str(row.get('Org. Ventas', '')).strip()
             nombre_sf_upper = str(t_row['Nombre SF'] if t_row is not None and 'Nombre SF' in t_row.index else '').upper()
-            if (imp_costo_total is not None and imp_costo_total > 0) or 'TP-' in nombre_sf_upper or 'SF TP' in nombre_sf_upper or 'TC-' in nombre_sf_upper:
+            
+            if sociedad_str == '7100':
+                tipo_operacion = 'CANTERAS PROPIAS'
+            elif sociedad_str == '7180':
+                tipo_operacion = 'TRADING'
+            elif (imp_costo_total is not None and imp_costo_total > 0) or 'TP-' in nombre_sf_upper or 'SF TP' in nombre_sf_upper or 'TC-' in nombre_sf_upper:
                 tipo_operacion = 'TRADING'
             else:
                 tipo_operacion = 'CANTERAS PROPIAS'
@@ -993,22 +1010,22 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
     
     # Fila 1: Grupos Superiores Fusionados
     ws_matriz.merge_cells(start_row=1, start_column=1, end_row=1, end_column=13)
-    apply_header_style(ws_matriz.cell(row=1, column=1), "=== DATOS DE RUTA Y MATERIAL ===", FILL_NAVY, FONT_WHITE_BOLD)
+    apply_header_style(ws_matriz.cell(row=1, column=1), "DATOS DE RUTA Y MATERIAL", FILL_NAVY, FONT_WHITE_BOLD)
     
     ws_matriz.merge_cells(start_row=1, start_column=14, end_row=1, end_column=19)
-    apply_header_style(ws_matriz.cell(row=1, column=14), "=== CONDICIONES DE VENTA ===", FILL_NAVY, FONT_WHITE_BOLD)
+    apply_header_style(ws_matriz.cell(row=1, column=14), "CONDICIONES DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
     
     ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=24)
-    apply_header_style(ws_matriz.cell(row=1, column=20), "=== CONDICIONES DE COMPRA (COSTO) ===", FILL_NAVY, FONT_WHITE_BOLD)
+    apply_header_style(ws_matriz.cell(row=1, column=20), "CONDICIONES DE COMPRA (COSTO)", FILL_NAVY, FONT_WHITE_BOLD)
     
     ws_matriz.merge_cells(start_row=1, start_column=25, end_row=1, end_column=27)
-    apply_header_style(ws_matriz.cell(row=1, column=25), "=== GOBERNANZA Y AUTORIZACIÓN ===", FILL_NAVY, FONT_WHITE_BOLD)
+    apply_header_style(ws_matriz.cell(row=1, column=25), "GOBERNANZA Y AUTORIZACIÓN", FILL_NAVY, FONT_WHITE_BOLD)
     
     ws_matriz.merge_cells(start_row=1, start_column=28, end_row=1, end_column=30)
-    apply_header_style(ws_matriz.cell(row=1, column=28), "=== VALIDACIÓN DE MARGEN ===", FILL_NAVY, FONT_WHITE_BOLD)
+    apply_header_style(ws_matriz.cell(row=1, column=28), "VALIDACIÓN DE MARGEN", FILL_NAVY, FONT_WHITE_BOLD)
     
     ws_matriz.merge_cells(start_row=1, start_column=31, end_row=1, end_column=33)
-    apply_header_style(ws_matriz.cell(row=1, column=31), "=== CONTRATO DE VENTA ===", FILL_NAVY, FONT_WHITE_BOLD)
+    apply_header_style(ws_matriz.cell(row=1, column=31), "CONTRATO DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
     
     # Fila 2: Encabezados individuales
     for col_idx, (col_name, fill, font, width) in enumerate(headers, start=1):
