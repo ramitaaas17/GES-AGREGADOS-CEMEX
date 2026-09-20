@@ -599,7 +599,12 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 tipo_operacion = 'CANTERAS PROPIAS'
                 
             # Cálculos de Márgenes y Gobernanza (MOP exclusivamente sobre Material)
-            mop = calc_mop(imp_mp, um_venta, mp_compra, um_costo, pv_val)
+            # En Sociedad 7100 (Filial / Canteras Propias), el MOP es siempre 0.0%
+            if sociedad_str == '7100':
+                mop = 0.0
+            else:
+                mop = calc_mop(imp_mp, um_venta, mp_compra, um_costo, pv_val)
+                
             precio_ref = precios_ref_mat.get(mat, imp_mp)
             nivel_aut = eval_autorizacion(tipo_operacion, imp_mp, precio_ref, mop)
             
@@ -759,7 +764,8 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
     
     # --- 3. MÉTRICAS CLAVE ---
     totales = len(df_matriz)
-    mop_validos = df_matriz['Margen Material (MOP %)'].dropna()
+    df_trading = df_matriz[df_matriz['Sociedad'].astype(str).str.strip() != '7100']
+    mop_validos = df_trading['Margen Material (MOP %)'].dropna() if not df_trading.empty else df_matriz['Margen Material (MOP %)'].dropna()
     mop_prom = mop_validos.mean() if not mop_validos.empty else 0
     auth_champion = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Champion', na=False)])
     auth_regional = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Regional', na=False)])
@@ -1079,7 +1085,10 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                 cell.number_format = '0.0%'
                 cell.alignment = ALIGN_RIGHT
                 if isinstance(val, (int, float)) and pd.notna(val):
-                    if val < 0.05:
+                    soc_val = str(row[2]).strip()
+                    if soc_val == '7100':
+                        cell.fill = FILL_WHITE
+                    elif val < 0.05:
                         cell.fill = FILL_RED
                     elif val > 0.08:
                         cell.fill = FILL_GREEN
