@@ -171,21 +171,24 @@ def calc_mop(importe_mp, um_venta, mp_compra, um_costo, pv):
         return 0.0
     return mop_round
 
-def eval_autorizacion(tipo_operacion, precio_venta, precio_referencia, mop):
+def eval_autorizacion(sociedad, tipo_operacion, precio_venta, precio_referencia, mop):
     """
     Niveles de Autorización y Alertas de Gobernanza:
     
-    1. CANTERAS PROPIAS:
-       - Si Precio_Venta >= Precio_Referencia -> 'Autoriza: Champion'
-       - Si Descuento <= 5% -> 'Autoriza: Regional | Requiere Justificacion'
-       - Si Descuento > 5%  -> 'Alerta: Requiere Vo.Bo. Nacional | Requiere Justificacion'
+    1. SOCIEDAD 7100 (Filial / Intercompañía):
+       - No Aplica (Filial)
        
-    2. TRADING:
+    2. TRADING / SOCIEDAD 7180:
        - Si Margen_Material > 8% -> 'Autoriza: Champion'
        - Si Margen_Material entre 5% y 8% -> 'Autoriza: Regional'
        - Si Margen_Material < 5% -> 'Alerta Fuera de Rango: Requiere revision puntual con Nacional'
+       - Si MOP es None -> 'Pendiente de Costo TRAOPE'
     """
-    if tipo_operacion == 'TRADING':
+    soc = str(sociedad).strip()
+    if soc == '7100':
+        return "No Aplica (Filial)"
+        
+    if tipo_operacion == 'TRADING' or soc == '7180':
         if mop is None or pd.isna(mop):
             return "Pendiente de Costo TRAOPE"
         if mop > 0.08:
@@ -195,21 +198,7 @@ def eval_autorizacion(tipo_operacion, precio_venta, precio_referencia, mop):
         else:
             return "Alerta Fuera de Rango: Requiere revision puntual con Nacional"
             
-    elif tipo_operacion == 'CANTERAS PROPIAS':
-        if pd.isna(precio_venta) or precio_venta <= 0:
-            return "Sin Precio MP"
-        if pd.isna(precio_referencia) or precio_referencia <= 0:
-            return "Autoriza: Champion"
-            
-        descuento = (precio_referencia - precio_venta) / precio_referencia
-        if precio_venta >= precio_referencia or descuento <= 0:
-            return "Autoriza: Champion"
-        elif descuento <= 0.05:
-            return "Autoriza: Regional | Requiere Justificacion"
-        else:
-            return "Alerta: Requiere Vo.Bo. Nacional | Requiere Justificacion"
-            
-    return ""
+    return "No Aplica (Filial)"
 
 def eval_semaforo(row):
     """
@@ -606,7 +595,7 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 mop = calc_mop(imp_mp, um_venta, mp_compra, um_costo, pv_val)
                 
             precio_ref = precios_ref_mat.get(mat, imp_mp)
-            nivel_aut = eval_autorizacion(tipo_operacion, imp_mp, precio_ref, mop)
+            nivel_aut = eval_autorizacion(sociedad_str, tipo_operacion, imp_mp, precio_ref, mop)
             
             # Validaciones Integrales
             val1 = calc_validacion1(um_venta, um_costo, cond_exp, imp_mp, imp_flete, pv_val)
@@ -765,20 +754,25 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
     # --- 3. MÉTRICAS CLAVE ---
     totales = len(df_matriz)
     df_trading = df_matriz[df_matriz['Sociedad'].astype(str).str.strip() != '7100']
+    tot_trading = len(df_trading)
+    tot_filial = totales - tot_trading
+    
     mop_validos = df_trading['Margen Material (MOP %)'].dropna() if not df_trading.empty else df_matriz['Margen Material (MOP %)'].dropna()
     mop_prom = mop_validos.mean() if not mop_validos.empty else 0
-    auth_champion = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Champion', na=False)])
-    auth_regional = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Regional', na=False)])
-    auth_nacional = len(df_matriz[df_matriz['Nivel Autorización / Alerta'].str.contains('Nacional|Alerta', na=False)])
     
-    pct_champ = (auth_champion / totales * 100) if totales > 0 else 0
-    pct_nac = (auth_nacional / totales * 100) if totales > 0 else 0
+    auth_champion = len(df_trading[df_trading['Nivel Autorización / Alerta'].str.contains('Champion', na=False)])
+    auth_regional = len(df_trading[df_trading['Nivel Autorización / Alerta'].str.contains('Regional', na=False)])
+    auth_nacional = len(df_trading[df_trading['Nivel Autorización / Alerta'].str.contains('Nacional|Alerta', na=False)])
+    
+    pct_champ = (auth_champion / tot_trading * 100) if tot_trading > 0 else 0
+    pct_reg = (auth_regional / tot_trading * 100) if tot_trading > 0 else 0
+    pct_nac = (auth_nacional / tot_trading * 100) if tot_trading > 0 else 0
     
     # 4 TARJETAS KPI MODERNAS
-    dibujar_tarjeta_kpi(ws_dash, 2, 4, "TOTAL RUTAS ANALIZADAS", f"{totales:,}", "Rutas activas en catálogo", FILL_NAVY)
-    dibujar_tarjeta_kpi(ws_dash, 5, 7, "MARGEN MATERIAL PROMEDIO", f"{mop_prom*100:.1f}%", "Ponderado sobre material puro", FILL_GREEN, Font(color=CLR_DARK_GREEN, bold=True, size=16))
-    dibujar_tarjeta_kpi(ws_dash, 8, 10, "AUTORIZACIÓN CHAMPION", f"{auth_champion} ({pct_champ:.1f}%)", "Margen > 8% / Sin Descuento", FILL_BLUE_ACC, Font(color=CLR_BLUE_ACCENT, bold=True, size=16))
-    dibujar_tarjeta_kpi(ws_dash, 11, 13, "ALERTAS NIVEL NACIONAL", f"{auth_nacional} ({pct_nac:.1f}%)", "Margen < 5% / Descuento > 5%", FILL_RED, Font(color=CLR_DARK_RED, bold=True, size=16))
+    dibujar_tarjeta_kpi(ws_dash, 2, 4, "TOTAL RUTAS ANALIZADAS", f"{totales:,}", f"Trading: {tot_trading:,} | Filial: {tot_filial:,}", FILL_NAVY)
+    dibujar_tarjeta_kpi(ws_dash, 5, 7, "MARGEN MATERIAL (TRADING)", f"{mop_prom*100:.1f}%", "Ponderado sobre material puro", FILL_GREEN, Font(color=CLR_DARK_GREEN, bold=True, size=16))
+    dibujar_tarjeta_kpi(ws_dash, 8, 10, "AUTORIZACIÓN CHAMPION", f"{auth_champion} ({pct_champ:.1f}%)", "Margen > 8% (Trading)", FILL_BLUE_ACC, Font(color=CLR_BLUE_ACCENT, bold=True, size=16))
+    dibujar_tarjeta_kpi(ws_dash, 11, 13, "ALERTAS NIVEL NACIONAL", f"{auth_nacional} ({pct_nac:.1f}%)", "Margen < 5% (Trading)", FILL_RED, Font(color=CLR_DARK_RED, bold=True, size=16))
     
     # --- 4. SECCIONES ANALÍTICAS LADO A LADO ---
     
@@ -786,7 +780,7 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
     ws_dash.merge_cells("B10:F10")
     apply_header_style(ws_dash.cell(row=10, column=2), "ESTATUS DE GOBERNANZA Y AUTORIZACIÓN", FILL_NAVY, FONT_WHITE_BOLD)
     
-    headers_gob = [("Nivel Autorización", 2), ("Criterio Objetivo", 3), ("Rutas", 5), ("% Total", 6)]
+    headers_gob = [("Nivel Autorización", 2), ("Criterio Objetivo", 3), ("Rutas", 5), ("% Trading", 6)]
     ws_dash.merge_cells("C11:D11")
     for txt, col in headers_gob:
         c = ws_dash.cell(row=11, column=col, value=txt)
@@ -796,9 +790,10 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
         c.border = THIN_BORDER
         
     filas_gob = [
-        ("Nivel Champion", "Margen > 8% / Sin Desc.", auth_champion, pct_champ, FILL_GREEN, FONT_BLACK_BOLD),
-        ("Nivel Regional", "Margen 5% - 8% / Desc <= 5%", auth_regional, (auth_regional/totales*100) if totales>0 else 0, FILL_REGIONAL, FONT_NORMAL),
-        ("Alerta Nacional", "Margen < 5% / Desc > 5%", auth_nacional, pct_nac, FILL_RED, FONT_BLACK_BOLD)
+        ("Nivel Champion", "Margen > 8% (Trading)", auth_champion, pct_champ, FILL_GREEN, FONT_BLACK_BOLD),
+        ("Nivel Regional", "Margen 5% - 8% (Trading)", auth_regional, pct_reg, FILL_REGIONAL, FONT_NORMAL),
+        ("Alerta Nacional", "Margen < 5% (Trading)", auth_nacional, pct_nac, FILL_RED, FONT_BLACK_BOLD),
+        ("No Aplica (Filial)", "Transferencia 0% (Intercompañía)", tot_filial, (tot_filial/totales*100) if totales>0 else 0, FILL_WHITE, FONT_NORMAL)
     ]
     
     for idx, (niv, crit, cant, pct, fill, f_font) in enumerate(filas_gob, start=12):
