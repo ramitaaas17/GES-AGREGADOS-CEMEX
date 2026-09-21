@@ -1,6 +1,19 @@
 Attribute VB_Name = "ModSelectorCEDIS"
 Option Explicit
 
+#If VBA7 Then
+    Private Declare PtrSafe Function OpenProcess Lib "kernel32" (ByVal dwDesiredAccess As Long, ByVal bInheritHandle As Long, ByVal dwProcessId As Long) As LongPtr
+    Private Declare PtrSafe Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As LongPtr, ByVal dwMilliseconds As Long) As Long
+    Private Declare PtrSafe Function CloseHandle Lib "kernel32" (ByVal hObject As LongPtr) As Long
+#Else
+    Private Declare Function OpenProcess Lib "kernel32" (ByVal dwDesiredAccess As Long, ByVal bInheritHandle As Long, ByVal dwProcessId As Long) As Long
+    Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
+    Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
+#End If
+
+Private Const SYNCHRONIZE As Long = &H100000
+Private Const INFINITE As Long = &HFFFFFFFF
+
 ' =============================================================================
 ' CEMEX AGREGADOS - ORQUESTADOR UNIFICADO DE MATRIZ DE VENTAS Y GOBERNANZA
 ' Módulo de Automatización para Selección Multi-CEDIS y Ejecución en Un Clic
@@ -34,7 +47,6 @@ ErrSelector:
 End Sub
 
 Public Sub EjecutarMatrizPython(ByVal listaCEDIS As String)
-    Dim wsh As Object
     Dim fso As Object
     Dim basePath As String
     Dim outDir As String
@@ -43,8 +55,13 @@ Public Sub EjecutarMatrizPython(ByVal listaCEDIS As String)
     Dim pyExe As String
     Dim logFile As String
     Dim cmd As String
-    Dim resCode As Long
     Dim tInicio As Date
+    Dim procId As Double
+    #If VBA7 Then
+        Dim hProcess As LongPtr
+    #Else
+        Dim hProcess As Long
+    #End If
     
     tInicio = Now - TimeSerial(0, 2, 0) ' Margen de 2 minutos
     
@@ -96,8 +113,28 @@ Public Sub EjecutarMatrizPython(ByVal listaCEDIS As String)
     cmd = "cmd.exe /c cd /d """ & basePath & """ && """ & pyExe & """ """ & pyScript & """ --fuente """ & sourceFile & """" & paramCedis & " --output """ & outDir & """ > """ & logFile & """ 2>&1"
     
     Application.StatusBar = "Procesando matriz de precios en Python... por favor espere."
-    Set wsh = CreateObject("WScript.Shell")
-    resCode = wsh.Run(cmd, 0, True)
+    
+    ' Ejecución nativa sin WScript.Shell
+    On Error Resume Next
+    procId = Shell(cmd, 6) ' vbMinimizedNoFocus
+    If Err.Number <> 0 Then
+        Err.Clear
+        procId = Shell(cmd, 1) ' vbNormalFocus
+    End If
+    On Error GoTo 0
+    
+    If procId <> 0 Then
+        hProcess = OpenProcess(SYNCHRONIZE, 0, CLng(procId))
+        If hProcess <> 0 Then
+            Call WaitForSingleObject(hProcess, 180000)
+            Call CloseHandle(hProcess)
+        End If
+    Else
+        MsgBox "No fue posible iniciar el proceso de Python desde Excel.", vbCritical, "CEMEX Error"
+        Application.StatusBar = False
+        Exit Sub
+    End If
+    
     Application.StatusBar = False
     
     ' Buscar el archivo recién generado
@@ -128,7 +165,7 @@ Public Sub EjecutarMatrizPython(ByVal listaCEDIS As String)
             Dim wbNew As Workbook
             Set wbNew = Workbooks.Open(latestFile)
             If Err.Number <> 0 Then
-                wsh.Run "explorer.exe """ & latestFile & """"
+                Call Shell("explorer.exe """ & latestFile & """", 1)
             End If
             On Error GoTo 0
         End If
@@ -145,6 +182,6 @@ Public Sub EjecutarMatrizPython(ByVal listaCEDIS As String)
         End If
         MsgBox "No se pudo generar el archivo de matriz." & vbCrLf & vbCrLf & _
                "Detalle del proceso:" & vbCrLf & _
-               IIf(logContent <> "", Left(logContent, 600), "Código de salida: " & resCode), vbCritical, "CEMEX Error de Generación"
+               IIf(logContent <> "", Left(logContent, 600), "Revise el log en _salidas_integradas\vba_execution.log"), vbCritical, "CEMEX Error de Generación"
     End If
 End Sub
