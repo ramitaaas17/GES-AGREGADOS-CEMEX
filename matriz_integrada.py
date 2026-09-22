@@ -591,6 +591,27 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
         t_map_c1 = df_traope.dropna(subset=[col_t_exp]).drop_duplicates('Concat1').set_index('Concat1')[col_t_exp].to_dict() if (col_t_exp and 'Concat1' in df_traope.columns) else {}
         t_map_c2 = df_traope.dropna(subset=[col_t_exp]).drop_duplicates('Concat2').set_index('Concat2')[col_t_exp].to_dict() if (col_t_exp and 'Concat2' in df_traope.columns) else {}
 
+        # Catálogo de Descripciones de Material de respaldo (TRAOPE y Contratos)
+        col_desc_traope = next((c for c in df_traope.columns if 'descrip' in str(c).lower()), None)
+        map_mat_desc_traope = {}
+        if col_desc_traope:
+            map_mat_desc_traope = (
+                df_traope.dropna(subset=['Material', col_desc_traope])
+                .drop_duplicates('Material')
+                .set_index('Material')[col_desc_traope]
+                .to_dict()
+            )
+            
+        col_desc_vta = next((c for c in df_contratos.columns if 'desc' in str(c).lower()), None)
+        map_mat_desc_vta = {}
+        if col_desc_vta and 'Material_clean' in df_contratos.columns:
+            map_mat_desc_vta = (
+                df_contratos.dropna(subset=['Material_clean', col_desc_vta])
+                .drop_duplicates('Material_clean')
+                .set_index('Material_clean')[col_desc_vta]
+                .to_dict()
+            )
+
         # =====================================================================
         # CONSTRUCCIÓN DE LA MATRIZ FILA POR FILA
         # =====================================================================
@@ -605,9 +626,11 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
             # 1. Flete (match exacto)
             f_row = flete_c1.loc[c1] if c1 in flete_c1.index else None
             
-            # 2. PV
+            # 2. PV y Denominación (con respaldo de TRAOPE y Contratos si falta en PESO_VOL)
             pv_val = pv_idx.loc[mat, 'PV_calc'] if mat in pv_idx.index else None
             pv_desc = pv_idx.loc[mat, 'Texto de material'] if mat in pv_idx.index else ''
+            if not pv_desc:
+                pv_desc = map_mat_desc_traope.get(mat, '') or map_mat_desc_vta.get(mat, '')
             
             # 3. Contratos de Venta
             llave_co = f"{row['Centro']}-{row['Shipfrom']}-{row['Destinatario']}-{mat}"
