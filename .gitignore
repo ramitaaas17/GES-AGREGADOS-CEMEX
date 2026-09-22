@@ -10,6 +10,10 @@ _test_out/
 _test_out_all/
 .matrizventas_cache/
 
+# Respaldos automáticos del libro maestro (los generan las herramientas; se regeneran solos)
+*_respaldo.xlsm
+*.xlsm.hash
+
 # Temporales de Excel y Windows
 ~$*
 *.tmp

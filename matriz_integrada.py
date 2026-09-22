@@ -3,6 +3,7 @@ import sys
 import glob
 import time
 import pickle
+import hashlib
 import argparse
 import logging
 from datetime import datetime
@@ -12,6 +13,11 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils.dataframe import dataframe_to_rows
 from openpyxl.utils import get_column_letter
+
+try:
+    import base_rutas          # base propia construida desde la hoja BASE 2026 (opcional)
+except ImportError:            # el motor sigue funcionando sin ella
+    base_rutas = None
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -263,23 +269,50 @@ def str_val(v):
     except (ValueError, TypeError):
         return str(v).strip()
 
+def _sin_texto(v):
+    return v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() == ''
+
+def cache_path(archivo, cache_dir=None):
+    """Ruta del caché. Con cache_dir lo aloja ahí (carpeta escribible por Python,
+    p. ej. fuera de Documentos si Windows tiene 'Acceso controlado a carpetas')."""
+    # v3: el caché incluye las hojas opcionales BASE 2026 y BD_Completa (los cachés anteriores no las traen)
+    if not cache_dir:
+        return f"{archivo}.mci_cache_v3.pkl"
+    huella = hashlib.md5(os.path.abspath(archivo).lower().encode('utf-8')).hexdigest()[:8]
+    return os.path.join(cache_dir, f"{Path(archivo).name}.{huella}.mci_cache_v3.pkl")
+
 def cache_data(cache_file, data):
-    with open(cache_file, 'wb') as f:
-        pickle.dump(data, f)
+    # El caché es solo una optimización: si no se puede escribir, se continúa sin él.
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(cache_file)), exist_ok=True)
+        with open(cache_file, 'wb') as f:
+            pickle.dump(data, f)
+    except Exception as e:
+        logging.warning(f"No se pudo guardar el caché ({e}); se continúa sin caché.")
+        try:
+            os.remove(cache_file)
+        except OSError:
+            pass
 
 def load_cached_data(cache_file, source_file=None):
     if not os.path.exists(cache_file):
+        logging.info("Sin caché previo: se lee el Excel completo.")
         return None
     if source_file and os.path.exists(source_file):
         if os.path.getmtime(source_file) > os.path.getmtime(cache_file):
+            logging.info("Los datos de origen cambiaron desde la última ejecución: se vuelven a leer y se ignora el caché.")
             return None
-    with open(cache_file, 'rb') as f:
-        return pickle.load(f)
+    try:
+        with open(cache_file, 'rb') as f:
+            return pickle.load(f)
+    except Exception as e:
+        logging.warning(f"Caché ilegible o de otra versión ({e}); se vuelve a leer el Excel.")
+        return None
 
-def cargar_excel(archivo, force_refresh=False):
+def cargar_excel(archivo, force_refresh=False, cache_dir=None):
     logging.info(f"Cargando archivo Excel: {archivo}")
-    cache_file = f"{archivo}.mci_cache_.pkl"
-    
+    cache_file = cache_path(archivo, cache_dir)
+
     if not force_refresh:
         data = load_cached_data(cache_file, archivo)
         if data is not None:
@@ -305,7 +338,18 @@ def cargar_excel(archivo, force_refresh=False):
     for hoja in hojas_requeridas:
         logging.info(f"Parseando hoja {hoja}...")
         data[hoja] = pd.read_excel(xls, sheet_name=hoja, dtype=str)
-        
+
+    # Hoja opcional: BASE 2026 (solicitudes de rutas; encabezado en la fila 4). Alimenta la base propia.
+    hoja_base = base_rutas.HOJA_BASE if base_rutas else 'BASE 2026'
+    if hoja_base in hojas_disponibles:
+        logging.info(f"Parseando hoja {hoja_base}...")
+        data[hoja_base] = pd.read_excel(xls, sheet_name=hoja_base, header=3, dtype=str)
+    else:
+        logging.warning(f"No se encontró la hoja '{hoja_base}'.")
+    if 'BD_Completa' in hojas_disponibles:
+        logging.info("Parseando hoja BD_Completa...")
+        data['BD_Completa'] = pd.read_excel(xls, sheet_name='BD_Completa', header=0, dtype=str)
+
     cache_data(cache_file, data)
     return data
 
@@ -418,7 +462,8 @@ def parse_txt(archivo_txt):
 # PROCESAMIENTO Y CRUCE UNIFICADO MULTI-CEDIS
 # =============================================================================
 
-def procesar_datos(data, cedis=None, modo_a=True):
+def procesar_datos(data, cedis=None, modo_a=True, buscador=None):
+    """buscador: base_rutas.BuscadorBD (opcional). Solo llena huecos; SAP manda siempre."""
     logging.info("Cruzando datos y calculando...")
     
     if modo_a:
@@ -495,6 +540,17 @@ def procesar_datos(data, cedis=None, modo_a=True):
         traope_c1 = df_traope[df_traope['Concat1'] != 'NA'].drop_duplicates('Concat1').set_index('Concat1')
         traope_c2 = df_traope.drop_duplicates('Concat2').set_index('Concat2')
         
+        # Nombre de destino según SAP (TRAOPE), por código de destino: el más frecuente. Manda sobre la base propia.
+        traope_nom_dest = {}
+        if col_destino and 'Nombre Destino' in df_traope.columns:
+            w = df_traope[(df_traope[col_destino] != '') & df_traope['Nombre Destino'].notna()].copy()
+            w['Nombre Destino'] = w['Nombre Destino'].astype(str).str.strip()
+            w = w[w['Nombre Destino'] != '']
+            if len(w):
+                cnt = (w.groupby([col_destino, 'Nombre Destino']).size().reset_index(name='n')
+                        .sort_values('n').drop_duplicates(col_destino, keep='last'))
+                traope_nom_dest = dict(zip(cnt[col_destino], cnt['Nombre Destino']))
+
         # Fletes: SOLO cruce exacto por Concat1
         flete_c1 = df_flete.drop_duplicates('Concat1').set_index('Concat1')
         
@@ -512,10 +568,14 @@ def procesar_datos(data, cedis=None, modo_a=True):
         # CONSTRUCCIÓN DE LA MATRIZ FILA POR FILA
         # =====================================================================
         filas = []
+        stats_bd = {'Cond. Expedición': 0, 'Nombre SF': 0, 'Desc. Centro': 0, 'Denominación': 0, 'PV': 0,
+                    'Nombre Destino': 0}
         for _, row in df_mp.iterrows():
             c1 = row['Concat1']
             c2 = row['Concat2']
             mat = row['Material']
+            sf_cod, cen_cod, dest_cod = row['Shipfrom'], row['Centro'], row['Destinatario']
+            completados = []      # (campo, origen) que SAP no trajo y se llenaron desde la base propia
             
             # 1. Flete (match exacto)
             f_row = flete_c1.loc[c1] if c1 in flete_c1.index else None
@@ -523,7 +583,18 @@ def procesar_datos(data, cedis=None, modo_a=True):
             # 2. PV
             pv_val = pv_idx.loc[mat, 'PV_calc'] if mat in pv_idx.index else None
             pv_desc = pv_idx.loc[mat, 'Texto de material'] if mat in pv_idx.index else ''
-            
+            if buscador is not None:
+                if pv_val is None or pd.isna(pv_val):
+                    pv_bd, org_pv = buscador.pv(sf_cod, cen_cod, dest_cod, mat)
+                    if pv_bd is not None:
+                        pv_val = pv_bd
+                        completados.append(('PV', org_pv))
+                if pv_desc is None or pd.isna(pv_desc) or str(pv_desc).strip() == '':
+                    d_bd = buscador.desc_material(mat)
+                    if d_bd:
+                        pv_desc = d_bd
+                        completados.append(('Denominación', 'Base propia'))
+
             # 3. Contratos de Venta
             llave_co = f"{row['Centro']}-{row['Shipfrom']}-{row['Destinatario']}-{mat}"
             co_row = contratos_idx.loc[llave_co] if llave_co in contratos_idx.index else None
@@ -534,7 +605,12 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 cond_exp = str(f_row['Cond. Expedición']).strip()
             elif co_row is not None and 'Condición Exp.' in co_row.index and pd.notna(co_row['Condición Exp.']):
                 cond_exp = str(co_row['Condición Exp.']).strip()
-                
+            # Sin dato en SAP: se completa con la MODALIDAD de la Base 2026 (1 / 2 / 4)
+            if not cond_exp and buscador is not None:
+                cond_exp, org_cond = buscador.cond_exp(sf_cod, cen_cod, dest_cod, mat)
+                if cond_exp:
+                    completados.append(('Cond. Expedición', org_cond))
+
             # 4. TRAOPE (Costo de Compra)
             t_row = None
             if c1 in traope_c1.index:
@@ -601,16 +677,37 @@ def procesar_datos(data, cedis=None, modo_a=True):
             val1 = calc_validacion1(um_venta, um_costo, cond_exp, imp_mp, imp_flete, pv_val)
             val2 = calc_validacion2(imp_costo_total, val1)
             
+            # Nombres: SAP/TRAOPE primero; si no vienen, se completan con la Base 2026
+            nombre_sf = t_row['Nombre SF'] if t_row is not None and 'Nombre SF' in t_row.index else ''
+            desc_centro = t_row['Descripción Centro'] if t_row is not None and 'Descripción Centro' in t_row.index else ''
+            nombre_dest = traope_nom_dest.get(dest_cod, '')
+            if buscador is not None:
+                if _sin_texto(nombre_sf):
+                    nombre_sf = buscador.nombre_sf(sf_cod)
+                    if nombre_sf:
+                        completados.append(('Nombre SF', 'Base propia'))
+                if _sin_texto(desc_centro):
+                    desc_centro = buscador.nombre_centro(cen_cod)
+                    if desc_centro:
+                        completados.append(('Desc. Centro', 'Base propia'))
+                if not nombre_dest:
+                    nombre_dest = buscador.nombre_destino(dest_cod)
+                    if nombre_dest:
+                        stats_bd['Nombre Destino'] += 1
+            for campo, _org in completados:
+                stats_bd[campo] += 1
+
             # Armado de fila con precio junto a cada condición
             fila_dict = {
                 'Concat1': c1,
                 'Concat2': c2,
                 'Sociedad': row.get('Org. Ventas', ''),
                 'Ship From': row.get('Shipfrom', ''),
-                'Nombre SF': t_row['Nombre SF'] if t_row is not None and 'Nombre SF' in t_row.index else '',
+                'Nombre SF': nombre_sf,
                 'Centro': row.get('Centro', ''),
-                'Desc. Centro': t_row['Descripción Centro'] if t_row is not None and 'Descripción Centro' in t_row.index else '',
+                'Desc. Centro': desc_centro,
                 'Destino': row.get('Destinatario', ''),
+                'Nombre Destino': nombre_dest,
                 'Material': mat,
                 'Denominación': pv_desc,
                 'PV': pv_val,
@@ -645,7 +742,10 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 # CONTRATO VENTA
                 'No. Contrato Venta': co_row['Llave'] if co_row is not None and 'Llave' in co_row.index else '',
                 'UM Contrato': co_row['UM'] if co_row is not None and 'UM' in co_row.index else '',
-                'Precio Contrato': pd.to_numeric(co_row['Precio Neto'], errors='coerce') if co_row is not None and 'Precio Neto' in co_row.index else None
+                'Precio Contrato': pd.to_numeric(co_row['Precio Neto'], errors='coerce') if co_row is not None and 'Precio Neto' in co_row.index else None,
+
+                # ORIGEN DE DATOS: campos que SAP no trajo y se completaron desde la base propia (Base 2026 + apoyo)
+                'Completado desde base propia': '; '.join(f'{c} [{o}]' for c, o in completados)
             }
             
             # Evaluación del Semáforo
@@ -653,6 +753,9 @@ def procesar_datos(data, cedis=None, modo_a=True):
             filas.append(fila_dict)
             
         matriz_df = pd.DataFrame(filas)
+        if buscador is not None:
+            logging.info("Base propia completó -> " + " | ".join(f"{k}: {v}" for k, v in stats_bd.items())
+                         + f"  (de {len(matriz_df)} rutas)")
         return matriz_df, df_mp, df_flete, df_traope, df_contratos
     else:
         return pd.DataFrame(), None, None, None, None
@@ -967,72 +1070,73 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
     ws_matriz = wb.active
     ws_matriz.title = "Matriz"
     
-    headers = [
-        ('Concat1', FILL_HEADER, FONT_BLACK_BOLD, 30),
-        ('Concat2', FILL_HEADER, FONT_BLACK_BOLD, 25),
-        ('Sociedad', FILL_HEADER, FONT_BLACK_BOLD, 10),
-        ('Ship From', FILL_HEADER, FONT_BLACK_BOLD, 12),
-        ('Nombre SF', FILL_HEADER, FONT_BLACK_BOLD, 22),
-        ('Centro', FILL_HEADER, FONT_BLACK_BOLD, 10),
-        ('Desc. Centro', FILL_HEADER, FONT_BLACK_BOLD, 20),
-        ('Destino', FILL_HEADER, FONT_BLACK_BOLD, 12),
-        ('Material', FILL_HEADER, FONT_BLACK_BOLD, 12),
-        ('Denominación', FILL_HEADER, FONT_BLACK_BOLD, 30),
-        ('PV', FILL_HEADER, FONT_BLACK_BOLD, 10),
-        ('Inicio Vigencia', FILL_HEADER, FONT_BLACK_BOLD, 14),
-        ('Fin Vigencia', FILL_HEADER, FONT_BLACK_BOLD, 14),
-        
-        # === CONDICIONES DE VENTA (Precio al lado de Condición) ===
-        ('Clase Cond. MP', FILL_VENTA, FONT_BLACK_BOLD, 14),
-        ('Importe MP', FILL_VENTA, FONT_BLACK_BOLD, 14),
-        ('UM Venta', FILL_VENTA, FONT_BLACK_BOLD, 10),
-        ('Clase Cond. Flete', FILL_VENTA, FONT_BLACK_BOLD, 15),
-        ('Importe Flete', FILL_VENTA, FONT_BLACK_BOLD, 14),
-        ('Cond. Expedición', FILL_VENTA, FONT_BLACK_BOLD, 14),
-        
-        # === CONDICIONES DE COMPRA (Desglosado) ===
-        ('Costo Total TRAOPE', FILL_COSTO, FONT_BLACK_BOLD, 16),
-        ('Flete Compra', FILL_COSTO, FONT_BLACK_BOLD, 14),
-        ('MP Compra (Costo Material)', FILL_COSTO, FONT_BLACK_BOLD, 18),
-        ('UM Costo', FILL_COSTO, FONT_BLACK_BOLD, 10),
-        ('Margen Material (MOP %)', FILL_COSTO, FONT_BLACK_BOLD, 18),
-        
-        # === GOBERNANZA Y AUTORIZACIÓN ===
-        ('Tipo Operación', FILL_GOB, FONT_BLACK_BOLD, 16),
-        ('Precio Referencia Base', FILL_GOB, FONT_BLACK_BOLD, 16),
-        ('Nivel Autorización / Alerta', FILL_GOB, FONT_BLACK_BOLD, 36),
-        
-        # === VALIDACIÓN DE MARGEN INTEGRAL ===
-        ('Validación 1', FILL_VAL, FONT_BLACK_BOLD, 14),
-        ('Validación 2', FILL_VAL, FONT_BLACK_BOLD, 14),
-        ('Semáforo', FILL_VAL, FONT_BLACK_BOLD, 16),
-        
-        # === CONTRATO DE VENTA ===
-        ('No. Contrato Venta', FILL_CONTRATO, FONT_BLACK_BOLD, 18),
-        ('UM Contrato', FILL_CONTRATO, FONT_BLACK_BOLD, 12),
-        ('Precio Contrato', FILL_CONTRATO, FONT_BLACK_BOLD, 14)
+    # Grupos de columnas: (título del grupo, [(encabezado, columna del DataFrame, relleno, fuente, ancho)])
+    # El formato de cada celda se decide por NOMBRE de columna (no por posición), así se pueden insertar columnas.
+    grupos = [
+        ('DATOS DE RUTA Y MATERIAL', [
+            ('Concat1', 'Concat1', FILL_HEADER, FONT_BLACK_BOLD, 30),
+            ('Concat2', 'Concat2', FILL_HEADER, FONT_BLACK_BOLD, 25),
+            ('Sociedad', 'Sociedad', FILL_HEADER, FONT_BLACK_BOLD, 10),
+            ('Ship From', 'Ship From', FILL_HEADER, FONT_BLACK_BOLD, 12),
+            ('Nombre SF', 'Nombre SF', FILL_HEADER, FONT_BLACK_BOLD, 22),
+            ('Centro', 'Centro', FILL_HEADER, FONT_BLACK_BOLD, 10),
+            ('Desc. Centro', 'Desc. Centro', FILL_HEADER, FONT_BLACK_BOLD, 20),
+            ('Destino', 'Destino', FILL_HEADER, FONT_BLACK_BOLD, 12),
+            ('Nombre Destino', 'Nombre Destino', FILL_HEADER, FONT_BLACK_BOLD, 28),
+            ('Material', 'Material', FILL_HEADER, FONT_BLACK_BOLD, 12),
+            ('Denominación', 'Denominación', FILL_HEADER, FONT_BLACK_BOLD, 30),
+            ('PV', 'PV', FILL_HEADER, FONT_BLACK_BOLD, 10),
+            ('Inicio Vigencia', 'Inicio Vigencia', FILL_HEADER, FONT_BLACK_BOLD, 14),
+            ('Fin Vigencia', 'Fin Vigencia', FILL_HEADER, FONT_BLACK_BOLD, 14),
+        ]),
+        # Precio al lado de su condición
+        ('CONDICIONES DE VENTA', [
+            ('Clase Cond. MP', 'Clase Cond. MP', FILL_VENTA, FONT_BLACK_BOLD, 14),
+            ('Importe MP', 'Importe MP', FILL_VENTA, FONT_BLACK_BOLD, 14),
+            ('UM Venta', 'UM Venta', FILL_VENTA, FONT_BLACK_BOLD, 10),
+            ('Clase Cond. Flete', 'Clase Cond. Flete', FILL_VENTA, FONT_BLACK_BOLD, 15),
+            ('Importe Flete', 'Importe Flete', FILL_VENTA, FONT_BLACK_BOLD, 14),
+            ('Cond. Expedición', 'Cond. Expedición', FILL_VENTA, FONT_BLACK_BOLD, 14),
+        ]),
+        ('CONDICIONES DE COMPRA (COSTO)', [
+            ('Costo Total TRAOPE', 'Costo Total TRAOPE', FILL_COSTO, FONT_BLACK_BOLD, 16),
+            ('Flete Compra', 'Flete Compra', FILL_COSTO, FONT_BLACK_BOLD, 14),
+            ('MP Compra (Costo Material)', 'MP Compra (Costo Material)', FILL_COSTO, FONT_BLACK_BOLD, 18),
+            ('UM Costo', 'UM Costo', FILL_COSTO, FONT_BLACK_BOLD, 10),
+            ('Margen Material (MOP %)', 'Margen Material (MOP %)', FILL_COSTO, FONT_BLACK_BOLD, 18),
+        ]),
+        ('GOBERNANZA Y AUTORIZACIÓN', [
+            ('Tipo Operación', 'Tipo Operación', FILL_GOB, FONT_BLACK_BOLD, 16),
+            ('Precio Referencia Base', 'Precio Referencia', FILL_GOB, FONT_BLACK_BOLD, 16),
+            ('Nivel Autorización / Alerta', 'Nivel Autorización / Alerta', FILL_GOB, FONT_BLACK_BOLD, 36),
+        ]),
+        ('VALIDACIÓN DE MARGEN', [
+            ('Validación 1', 'Validacion 1', FILL_VAL, FONT_BLACK_BOLD, 14),
+            ('Validación 2', 'Validacion 2', FILL_VAL, FONT_BLACK_BOLD, 14),
+            ('Semáforo', 'Semaforo', FILL_VAL, FONT_BLACK_BOLD, 16),
+        ]),
+        ('CONTRATO DE VENTA', [
+            ('No. Contrato Venta', 'No. Contrato Venta', FILL_CONTRATO, FONT_BLACK_BOLD, 18),
+            ('UM Contrato', 'UM Contrato', FILL_CONTRATO, FONT_BLACK_BOLD, 12),
+            ('Precio Contrato', 'Precio Contrato', FILL_CONTRATO, FONT_BLACK_BOLD, 14),
+        ]),
+        ('ORIGEN DE DATOS', [
+            ('Completado desde base propia', 'Completado desde base propia', FILL_HEADER, FONT_BLACK_BOLD, 60),
+        ]),
     ]
-    
-    # Fila 1: Grupos Superiores Fusionados
-    ws_matriz.merge_cells(start_row=1, start_column=1, end_row=1, end_column=13)
-    apply_header_style(ws_matriz.cell(row=1, column=1), "DATOS DE RUTA Y MATERIAL", FILL_NAVY, FONT_WHITE_BOLD)
-    
-    ws_matriz.merge_cells(start_row=1, start_column=14, end_row=1, end_column=19)
-    apply_header_style(ws_matriz.cell(row=1, column=14), "CONDICIONES DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
-    
-    ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=24)
-    apply_header_style(ws_matriz.cell(row=1, column=20), "CONDICIONES DE COMPRA (COSTO)", FILL_NAVY, FONT_WHITE_BOLD)
-    
-    ws_matriz.merge_cells(start_row=1, start_column=25, end_row=1, end_column=27)
-    apply_header_style(ws_matriz.cell(row=1, column=25), "GOBERNANZA Y AUTORIZACIÓN", FILL_NAVY, FONT_WHITE_BOLD)
-    
-    ws_matriz.merge_cells(start_row=1, start_column=28, end_row=1, end_column=30)
-    apply_header_style(ws_matriz.cell(row=1, column=28), "VALIDACIÓN DE MARGEN", FILL_NAVY, FONT_WHITE_BOLD)
-    
-    ws_matriz.merge_cells(start_row=1, start_column=31, end_row=1, end_column=33)
-    apply_header_style(ws_matriz.cell(row=1, column=31), "CONTRATO DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
-    
-    # Fila 2: Encabezados individuales
+    headers = [(h, fill, font, w) for _, cols in grupos for (h, _c, fill, font, w) in cols]
+    cols_order = [c for _, cols in grupos for (_h, c, _f, _fo, _w) in cols]
+
+    # Fila 1: grupos superiores fusionados
+    col_ini = 1
+    for titulo, cols in grupos:
+        col_fin = col_ini + len(cols) - 1
+        if col_fin > col_ini:
+            ws_matriz.merge_cells(start_row=1, start_column=col_ini, end_row=1, end_column=col_fin)
+        apply_header_style(ws_matriz.cell(row=1, column=col_ini), titulo, FILL_NAVY, FONT_WHITE_BOLD)
+        col_ini = col_fin + 1
+
+    # Fila 2: encabezados individuales
     for col_idx, (col_name, fill, font, width) in enumerate(headers, start=1):
         cell = ws_matriz.cell(row=2, column=col_idx)
         cell.value = col_name
@@ -1041,24 +1145,20 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
         cell.border = THIN_BORDER
         cell.alignment = ALIGN_CENTER
         ws_matriz.column_dimensions[get_column_letter(col_idx)].width = width
-        
+
     ws_matriz.freeze_panes = "A3"
-    
-    # Orden exacto de columnas para el volcado (33 columnas)
-    cols_order = [
-        'Concat1', 'Concat2', 'Sociedad', 'Ship From', 'Nombre SF',
-        'Centro', 'Desc. Centro', 'Destino', 'Material', 'Denominación',
-        'PV', 'Inicio Vigencia', 'Fin Vigencia',
-        'Clase Cond. MP', 'Importe MP', 'UM Venta', 'Clase Cond. Flete', 'Importe Flete', 'Cond. Expedición',
-        'Costo Total TRAOPE', 'Flete Compra', 'MP Compra (Costo Material)', 'UM Costo', 'Margen Material (MOP %)',
-        'Tipo Operación', 'Precio Referencia', 'Nivel Autorización / Alerta',
-        'Validacion 1', 'Validacion 2', 'Semaforo',
-        'No. Contrato Venta', 'UM Contrato', 'Precio Contrato'
-    ]
+
+    COLS_MONEDA = {'Importe MP', 'Importe Flete', 'Costo Total TRAOPE', 'Flete Compra', 'MP Compra (Costo Material)',
+                   'Precio Referencia', 'Validacion 1', 'Validacion 2', 'Precio Contrato'}
+    COLS_CENTRADAS = {'Sociedad', 'Ship From', 'Centro', 'Destino', 'Material', 'Inicio Vigencia', 'Fin Vigencia',
+                      'Clase Cond. MP', 'UM Venta', 'Clase Cond. Flete', 'Cond. Expedición', 'UM Costo',
+                      'Tipo Operación', 'Semaforo', 'No. Contrato Venta', 'UM Contrato'}
+    idx_sociedad = cols_order.index('Sociedad')
     df_out = df_matriz[cols_order]
-    
+
     for r_idx, row in enumerate(df_out.itertuples(index=False), start=3):
         for c_idx, val in enumerate(row, start=1):
+            nombre = cols_order[c_idx - 1]
             cell = ws_matriz.cell(row=r_idx, column=c_idx)
             try:
                 is_na = pd.isna(val)
@@ -1068,19 +1168,19 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                 cell.value = ""
             else:
                 cell.value = val
-                
+
             cell.font = FONT_NORMAL
             cell.border = THIN_BORDER
-            
+
             # Formatos numéricos y alineaciones
-            if c_idx in [15, 18, 20, 21, 22, 26, 28, 29, 33]: 
+            if nombre in COLS_MONEDA:
                 cell.number_format = '$#,##0.00'
                 cell.alignment = ALIGN_RIGHT
-            elif c_idx == 24: # Margen MOP %
+            elif nombre == 'Margen Material (MOP %)':
                 cell.number_format = '0.0%'
                 cell.alignment = ALIGN_RIGHT
                 if isinstance(val, (int, float)) and pd.notna(val):
-                    soc_val = str(row[2]).strip()
+                    soc_val = str(row[idx_sociedad]).strip()
                     if soc_val == '7100':
                         cell.fill = FILL_WHITE
                     elif val < 0.05:
@@ -1089,16 +1189,16 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                         cell.fill = FILL_GREEN
                     else:
                         cell.fill = FILL_REGIONAL
-            elif c_idx == 11: # PV
+            elif nombre == 'PV':
                 cell.number_format = '#,##0.000'
                 cell.alignment = ALIGN_RIGHT
-            elif c_idx in [3, 4, 6, 8, 9, 12, 13, 14, 16, 17, 19, 23, 25, 30, 31, 32]:
+            elif nombre in COLS_CENTRADAS:
                 cell.alignment = ALIGN_CENTER
             else:
                 cell.alignment = ALIGN_LEFT
-                
-            # Alertas de Gobernanza (Col 27)
-            if c_idx == 27 and isinstance(val, str):
+
+            # Alertas de Gobernanza
+            if nombre == 'Nivel Autorización / Alerta' and isinstance(val, str):
                 if 'Champion' in val:
                     cell.fill = FILL_GREEN
                 elif 'Regional' in val:
@@ -1106,9 +1206,9 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                 elif 'Alerta' in val or 'Nacional' in val:
                     cell.fill = FILL_RED
                     cell.font = FONT_BLACK_BOLD
-                    
-            # Semáforo (Col 30)
-            if c_idx == 30 and isinstance(val, str):
+
+            # Semáforo
+            if nombre == 'Semaforo' and isinstance(val, str):
                 if val in ('SIN_FLETE', 'SIN_PV', 'SIN_COSTO', 'SIN_MP'):
                     cell.fill = FILL_ORANGE
                 elif val == 'DIFERENCIA':
@@ -1117,12 +1217,12 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                     cell.fill = FILL_RED
                 elif val == 'OK':
                     cell.fill = FILL_GREEN
-                    
-            # Validación 2 amarilla si abs > 1 (Col 29)
-            if c_idx == 29 and isinstance(val, (int, float)) and pd.notna(val):
+
+            # Validación 2 amarilla si abs > 1
+            if nombre == 'Validacion 2' and isinstance(val, (int, float)) and pd.notna(val):
                 if abs(val) > 1:
                     cell.fill = FILL_WARN
-                    
+
     # -------------------------------------------------------------------------
     # Hoja 2: Dashboard Ejecutivo Premium (Hoja Inicial)
     # -------------------------------------------------------------------------
@@ -1156,8 +1256,16 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_out = os.path.join(script_dir, "_salidas_integradas")
     parser.add_argument('--output', type=str, default=default_out, help="Carpeta de salida")
+    parser.add_argument('--cache-dir', type=str, default=None, help="Carpeta del caché (default: junto al archivo fuente)")
     parser.add_argument('--refresh-cache', action='store_true', help="Ignorar caché y reprocesar el Excel")
-    
+    parser.add_argument('--apoyo', type=str, default=None,
+                        help="Archivo .xlsx o carpeta con fuentes de apoyo (default: carpeta 'fuentes_apoyo' junto al script)")
+    parser.add_argument('--sin-base', action='store_true', help="No completar datos desde la base propia (BASE 2026 + apoyo)")
+    parser.add_argument('--reconstruir-bd', action='store_true',
+                        help="Ignora la hoja BD_Completa del libro y arma la base desde BASE 2026 + fuentes de apoyo")
+    parser.add_argument('--solo-bd', action='store_true',
+                        help="Solo construir y guardar la base propia en Excel (sin generar la matriz)")
+
     args = parser.parse_args()
     
     if len(sys.argv) == 1:
@@ -1167,16 +1275,48 @@ def main():
     inicio = time.time()
         
     if args.fuente:
-        files = glob.glob(args.fuente)
+        # isfile primero: glob interpretaría corchetes [ ] de la ruta como comodines
+        files = [args.fuente] if os.path.isfile(args.fuente) else sorted(glob.glob(args.fuente))
+        files = [f for f in files if not os.path.basename(f).startswith('~$')]  # temporales de Excel
         if not files:
             logging.error(f"No se encontró el archivo: {args.fuente}")
             sys.exit(1)
         fuente = files[0]
-        
-        data_raw = cargar_excel(fuente, force_refresh=args.refresh_cache)
-        df_matriz, df_mp, df_flete, df_traope, df_contratos = procesar_datos(data_raw, cedis=args.cedis, modo_a=True)
-        escribir_excel(df_matriz, args.cedis, args.output, [df_mp, df_flete, df_traope, df_contratos])
-        
+
+        data_raw = cargar_excel(fuente, force_refresh=args.refresh_cache, cache_dir=args.cache_dir)
+
+        # Base propia de rutas: solo completa huecos; SAP manda siempre.
+        # Se lee de la hoja BD_Completa del libro (editable); si no existe, se arma con BASE 2026 + fuentes de apoyo.
+        buscador = None
+        bd = None
+        if base_rutas is not None and not args.sin_base:
+            try:
+                hoja_bd = None if (args.reconstruir_bd or args.solo_bd) else data_raw.get('BD_Completa')
+                if hoja_bd is not None:
+                    bd = base_rutas.bd_desde_hoja(hoja_bd)
+                    if bd is not None:
+                        logging.info(f"Base propia: hoja BD_Completa del libro ({len(bd)} registros).")
+                if bd is None:
+                    apoyo_ruta = args.apoyo or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fuentes_apoyo')
+                    bd = base_rutas.construir_bd(data_raw.get(base_rutas.HOJA_BASE), base_rutas.cargar_apoyo(apoyo_ruta))
+                    if bd is not None:
+                        logging.info("Base propia armada desde BASE 2026 + fuentes de apoyo: " + base_rutas.resumen_texto(bd))
+                if bd is not None:
+                    buscador = base_rutas.BuscadorBD(bd)
+                    if args.solo_bd:
+                        os.makedirs(args.output, exist_ok=True)
+                        ruta_bd = base_rutas.guardar_bd_excel(bd, os.path.join(args.output, 'BD_Rutas.xlsx'))
+                        logging.info(f"Base propia guardada: {ruta_bd}")
+            except Exception as e:      # es un complemento: nunca debe impedir generar la matriz
+                logging.warning(f"No se pudo preparar la base propia ({e}); se continúa sin ella.")
+        if args.solo_bd:
+            sys.exit(0 if bd is not None else 3)
+
+        df_matriz, df_mp, df_flete, df_traope, df_contratos = procesar_datos(
+            data_raw, cedis=args.cedis, modo_a=True, buscador=buscador)
+        if not escribir_excel(df_matriz, args.cedis, args.output, [df_mp, df_flete, df_traope, df_contratos]):
+            sys.exit(2)  # sin datos para los CEDIS pedidos: no se generó archivo
+
     elif args.mp and args.flete:
         data_raw = {
             'MP': parse_txt(args.mp),
