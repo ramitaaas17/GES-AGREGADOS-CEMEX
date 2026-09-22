@@ -171,6 +171,25 @@ def calc_mop(importe_mp, um_venta, mp_compra, um_costo, pv):
         return 0.0
     return mop_round
 
+def es_proximo_a_vencer(fecha_val, dias_margen=60):
+    """
+    Verifica si una fecha de fin de vigencia está próxima a vencer (+- 60 días / 2 meses desde hoy).
+    """
+    if pd.isna(fecha_val) or not fecha_val:
+        return False
+    fecha_limpia = str(fecha_val).strip().split('.')[0].replace('-', '').replace('/', '')
+    if len(fecha_limpia) == 8 and fecha_limpia.isdigit():
+        try:
+            yyyy = int(fecha_limpia[:4])
+            mm = int(fecha_limpia[4:6])
+            dd = int(fecha_limpia[6:8])
+            f_dt = datetime(yyyy, mm, dd)
+            diff = (f_dt - datetime.now()).days
+            return -dias_margen <= diff <= dias_margen
+        except Exception:
+            pass
+    return False
+
 def eval_autorizacion(sociedad, tipo_operacion, precio_venta, precio_referencia, mop):
     """
     Niveles de Autorización y Alertas de Gobernanza:
@@ -178,7 +197,7 @@ def eval_autorizacion(sociedad, tipo_operacion, precio_venta, precio_referencia,
     1. SOCIEDAD 7100 (Filial / Intercompañía):
        - No Aplica (Filial)
        
-    2. TRADING / SOCIEDAD 7180:
+    2. TRADING / SOCIEDADES 7180 y 7277 (Terceros):
        - Si Margen_Material > 8% -> 'Autoriza: Champion'
        - Si Margen_Material entre 5% y 8% -> 'Autoriza: Regional'
        - Si Margen_Material < 5% -> 'Alerta Fuera de Rango: Requiere revision puntual con Nacional'
@@ -188,7 +207,7 @@ def eval_autorizacion(sociedad, tipo_operacion, precio_venta, precio_referencia,
     if soc == '7100':
         return "No Aplica (Filial)"
         
-    if tipo_operacion == 'TRADING' or soc == '7180':
+    if tipo_operacion == 'TRADING' or soc in ('7180', '7277'):
         if mop is None or pd.isna(mop):
             return "Pendiente de Costo TRAOPE"
         if mop > 0.08:
@@ -418,7 +437,7 @@ def parse_txt(archivo_txt):
 # PROCESAMIENTO Y CRUCE UNIFICADO MULTI-CEDIS
 # =============================================================================
 
-def procesar_datos(data, cedis=None, modo_a=True):
+def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
     logging.info("Cruzando datos y calculando...")
     
     if modo_a:
@@ -436,8 +455,21 @@ def procesar_datos(data, cedis=None, modo_a=True):
         df_flete = df_flete[df_flete['Fin Validez_num'] >= 99991231]
         
         if 'Validez a' in df_traope.columns:
-            df_traope['Validez a_num'] = pd.to_numeric(df_traope['Validez a'].str.replace('.', '').str.replace('-', ''), errors='coerce')
-            df_traope = df_traope[df_traope['Validez a_num'] >= 20291231]
+            df_traope['Validez a_str'] = df_traope['Validez a'].astype(str).str.split('.').str[0].str.replace('-', '').str.replace('.', '')
+            df_traope['Validez a_num'] = pd.to_numeric(df_traope['Validez a_str'], errors='coerce')
+            
+            # Opción configurable de vigencia de contratos TRAOPE
+            if str(filtro_traope).strip() == '2029':
+                # Modo estricto legado (>= 20291231)
+                df_traope = df_traope[df_traope['Validez a_num'] >= 20291231]
+            elif str(filtro_traope).strip() == 'todos':
+                # Sin filtro de fecha
+                pass
+            else:
+                # Contratos (Vigencia >= 2024) [Recomendado]
+                df_traope = df_traope[(df_traope['Validez a_num'] >= 20240101) | (df_traope['Validez a_num'].isna())]
+                
+            df_traope = df_traope.sort_values(by='Validez a_num', ascending=False)
             
         if 'Fecha Fin validez' in df_contratos.columns:
             df_contratos['Fecha Fin validez_num'] = pd.to_numeric(df_contratos['Fecha Fin validez'], errors='coerce')
@@ -508,6 +540,57 @@ def procesar_datos(data, cedis=None, modo_a=True):
         # Precios de referencia base por Material para Canteras Propias (promedio ponderado/media)
         precios_ref_mat = df_mp.groupby('Material')['Importe'].mean().to_dict()
         
+        # Catálogos Maestros Globales de Snowflake para Nombres de SF y Descripción de Centros
+        col_sf_traope = 'Ship From' if 'Ship From' in df_traope.columns else 'Shipfrom'
+        col_nom_sf = 'Nombre SF' if 'Nombre SF' in df_traope.columns else None
+        col_desc_centro = 'Descripción Centro' if 'Descripción Centro' in df_traope.columns else 'Desc. Centro'
+        
+        map_shipfrom_nombre = {}
+        if col_nom_sf and col_nom_sf in df_traope.columns:
+            map_shipfrom_nombre = (
+                df_traope.dropna(subset=[col_sf_traope, col_nom_sf])
+                .drop_duplicates(col_sf_traope)
+                .set_index(col_sf_traope)[col_nom_sf]
+                .to_dict()
+            )
+            
+        map_centro_desc = {}
+        if col_desc_centro and col_desc_centro in df_traope.columns:
+            map_centro_desc = (
+                df_traope.dropna(subset=['Centro', col_desc_centro])
+                .drop_duplicates('Centro')
+                .set_index('Centro')[col_desc_centro]
+                .to_dict()
+            )
+
+        # Identificar columnas de Condición de Expedición en cada DataFrame
+        col_f_exp = next((c for c in df_flete.columns if 'exp' in str(c).lower()), None)
+        col_v_exp = next((c for c in df_contratos.columns if 'exp' in str(c).lower()), None)
+        col_t_exp = next((c for c in df_traope.columns if 'cond. exp' in str(c).lower()), None)
+
+        # Normalizar llaves en Contratos de Venta para búsqueda en cascada
+        if 'Shipfrom' in df_contratos.columns and 'Centro' in df_contratos.columns and 'Material' in df_contratos.columns:
+            df_contratos['Shipfrom_clean'] = df_contratos['Shipfrom'].apply(str_val)
+            df_contratos['Centro_clean'] = df_contratos['Centro'].apply(str_val)
+            df_contratos['Material_clean'] = df_contratos['Material'].apply(str_val)
+            col_dest_v = 'Destino' if 'Destino' in df_contratos.columns else None
+            if col_dest_v:
+                df_contratos['Destino_clean'] = df_contratos[col_dest_v].apply(str_val)
+                df_contratos['Concat1'] = df_contratos['Shipfrom_clean'] + '-' + df_contratos['Centro_clean'] + '-' + df_contratos['Destino_clean'] + '-' + df_contratos['Material_clean']
+            else:
+                df_contratos['Concat1'] = 'NA'
+            df_contratos['Concat2'] = df_contratos['Shipfrom_clean'] + '-' + df_contratos['Centro_clean'] + '-' + df_contratos['Material_clean']
+
+        # Mapeos globales para resolución en cascada de Condición de Expedición
+        f_map_c1 = df_flete.dropna(subset=[col_f_exp]).drop_duplicates('Concat1').set_index('Concat1')[col_f_exp].to_dict() if col_f_exp else {}
+        f_map_c2 = df_flete.dropna(subset=[col_f_exp]).drop_duplicates('Concat2').set_index('Concat2')[col_f_exp].to_dict() if col_f_exp else {}
+
+        v_map_c1 = df_contratos.dropna(subset=[col_v_exp]).drop_duplicates('Concat1').set_index('Concat1')[col_v_exp].to_dict() if (col_v_exp and 'Concat1' in df_contratos.columns) else {}
+        v_map_c2 = df_contratos.dropna(subset=[col_v_exp]).drop_duplicates('Concat2').set_index('Concat2')[col_v_exp].to_dict() if (col_v_exp and 'Concat2' in df_contratos.columns) else {}
+
+        t_map_c1 = df_traope.dropna(subset=[col_t_exp]).drop_duplicates('Concat1').set_index('Concat1')[col_t_exp].to_dict() if (col_t_exp and 'Concat1' in df_traope.columns) else {}
+        t_map_c2 = df_traope.dropna(subset=[col_t_exp]).drop_duplicates('Concat2').set_index('Concat2')[col_t_exp].to_dict() if (col_t_exp and 'Concat2' in df_traope.columns) else {}
+
         # =====================================================================
         # CONSTRUCCIÓN DE LA MATRIZ FILA POR FILA
         # =====================================================================
@@ -516,6 +599,8 @@ def procesar_datos(data, cedis=None, modo_a=True):
             c1 = row['Concat1']
             c2 = row['Concat2']
             mat = row['Material']
+            sf_str = str(row.get('Shipfrom', '')).strip()
+            centro_str = str(row.get('Centro', '')).strip()
             
             # 1. Flete (match exacto)
             f_row = flete_c1.loc[c1] if c1 in flete_c1.index else None
@@ -528,19 +613,46 @@ def procesar_datos(data, cedis=None, modo_a=True):
             llave_co = f"{row['Centro']}-{row['Shipfrom']}-{row['Destinatario']}-{mat}"
             co_row = contratos_idx.loc[llave_co] if llave_co in contratos_idx.index else None
             
-            # Condición de Expedición (de Flete o del Contrato)
-            cond_exp = ''
-            if f_row is not None and 'Cond. Expedición' in f_row.index and pd.notna(f_row['Cond. Expedición']):
-                cond_exp = str(f_row['Cond. Expedición']).strip()
-            elif co_row is not None and 'Condición Exp.' in co_row.index and pd.notna(co_row['Condición Exp.']):
-                cond_exp = str(co_row['Condición Exp.']).strip()
-                
             # 4. TRAOPE (Costo de Compra)
             t_row = None
             if c1 in traope_c1.index:
                 t_row = traope_c1.loc[c1]
             elif c2 in traope_c2.index:
                 t_row = traope_c2.loc[c2]
+                
+            # Condición de Expedición con Búsqueda en Cascada Multifuente
+            cond_exp = ''
+            if f_row is not None and col_f_exp and col_f_exp in f_row.index and pd.notna(f_row[col_f_exp]):
+                cond_exp = str(f_row[col_f_exp]).strip()
+            elif co_row is not None and col_v_exp and col_v_exp in co_row.index and pd.notna(co_row[col_v_exp]):
+                cond_exp = str(co_row[col_v_exp]).strip()
+            elif t_row is not None and col_t_exp and col_t_exp in t_row.index and pd.notna(t_row[col_t_exp]):
+                cond_exp = str(t_row[col_t_exp]).strip()
+            elif c1 in f_map_c1:
+                cond_exp = str(f_map_c1[c1]).strip()
+            elif c1 in v_map_c1:
+                cond_exp = str(v_map_c1[c1]).strip()
+            elif c1 in t_map_c1:
+                cond_exp = str(t_map_c1[c1]).strip()
+            elif c2 in f_map_c2:
+                cond_exp = str(f_map_c2[c2]).strip()
+            elif c2 in v_map_c2:
+                cond_exp = str(v_map_c2[c2]).strip()
+            elif c2 in t_map_c2:
+                cond_exp = str(t_map_c2[c2]).strip()
+                
+            # Nombres de Ship From y Descripción de Centro con catálogo maestro global
+            nombre_sf = ''
+            if t_row is not None and 'Nombre SF' in t_row.index and pd.notna(t_row['Nombre SF']):
+                nombre_sf = str(t_row['Nombre SF']).strip()
+            if not nombre_sf:
+                nombre_sf = map_shipfrom_nombre.get(sf_str, '')
+
+            desc_centro = ''
+            if t_row is not None and 'Descripción Centro' in t_row.index and pd.notna(t_row['Descripción Centro']):
+                desc_centro = str(t_row['Descripción Centro']).strip()
+            if not desc_centro:
+                desc_centro = map_centro_desc.get(centro_str, '')
                 
             imp_mp = row['Importe']
             imp_flete = f_row['Importe'] if f_row is not None else None
@@ -550,8 +662,21 @@ def procesar_datos(data, cedis=None, modo_a=True):
             imp_flete_compra = None
             mp_compra = None
             um_costo = None
+            contrato_compra = ''
+            fin_vigencia_compra = ''
             
             if t_row is not None:
+                if 'Contrato_Pos' in t_row.index and pd.notna(t_row['Contrato_Pos']):
+                    contrato_compra = str(t_row['Contrato_Pos']).strip()
+                elif 'Doc. Compras' in t_row.index and pd.notna(t_row['Doc. Compras']):
+                    pos_str = str(t_row.get('Pos', '')).strip()
+                    contrato_compra = f"{str(t_row['Doc. Compras']).strip()}-{pos_str}" if pos_str else str(t_row['Doc. Compras']).strip()
+                    
+                if 'Validez a' in t_row.index and pd.notna(t_row['Validez a']):
+                    fin_vigencia_compra = str(t_row['Validez a']).strip().split('.')[0]
+                elif 'Fin período validez' in t_row.index and pd.notna(t_row['Fin período validez']):
+                    fin_vigencia_compra = str(t_row['Fin período validez']).strip().split('.')[0]
+
                 if 'Precio neto pedido' in t_row.index:
                     imp_costo_total = pd.to_numeric(t_row['Precio neto pedido'], errors='coerce')
                 if 'Importe Condición' in t_row.index and pd.notna(t_row['Importe Condición']):
@@ -573,14 +698,14 @@ def procesar_datos(data, cedis=None, modo_a=True):
                         
             # Clasificación Oficial Tipo de Operación:
             # - 7100 = CANTERAS PROPIAS (100% de los casos)
-            # - 7180 = TRADING
+            # - 7180 y 7277 = TRADING (Terceros)
             # - Otras sociedades: si tiene costo o prefijo TP/TC es TRADING, si no CANTERAS PROPIAS
             sociedad_str = str(row.get('Org. Ventas', '')).strip()
             nombre_sf_upper = str(t_row['Nombre SF'] if t_row is not None and 'Nombre SF' in t_row.index else '').upper()
             
             if sociedad_str == '7100':
                 tipo_operacion = 'CANTERAS PROPIAS'
-            elif sociedad_str == '7180':
+            elif sociedad_str in ('7180', '7277'):
                 tipo_operacion = 'TRADING'
             elif (imp_costo_total is not None and imp_costo_total > 0) or 'TP-' in nombre_sf_upper or 'SF TP' in nombre_sf_upper or 'TC-' in nombre_sf_upper:
                 tipo_operacion = 'TRADING'
@@ -607,9 +732,9 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 'Concat2': c2,
                 'Sociedad': row.get('Org. Ventas', ''),
                 'Ship From': row.get('Shipfrom', ''),
-                'Nombre SF': t_row['Nombre SF'] if t_row is not None and 'Nombre SF' in t_row.index else '',
+                'Nombre SF': nombre_sf,
                 'Centro': row.get('Centro', ''),
-                'Desc. Centro': t_row['Descripción Centro'] if t_row is not None and 'Descripción Centro' in t_row.index else '',
+                'Desc. Centro': desc_centro,
                 'Destino': row.get('Destinatario', ''),
                 'Material': mat,
                 'Denominación': pv_desc,
@@ -626,6 +751,8 @@ def procesar_datos(data, cedis=None, modo_a=True):
                 'Cond. Expedición': cond_exp,
                 
                 # COSTO: Desglosado Total, Flete Compra y Costo Material Puro
+                'No. Contrato Compra': contrato_compra,
+                'Fin Vigencia Compra': fin_vigencia_compra,
                 'Costo Total TRAOPE': imp_costo_total,
                 'Flete Compra': imp_flete_compra,
                 'MP Compra (Costo Material)': mp_compra,
@@ -707,7 +834,7 @@ def dibujar_tarjeta_kpi(ws, col_ini, col_fin, titulo, valor_str, subtitulo, acce
     c_sub.font = FONT_KPI_SUB
     c_sub.alignment = ALIGN_CENTER
 
-def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
+def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_traope='2024'):
     ws_dash = wb.create_sheet(title="Dashboard", index=0)
     ws_dash.views.sheetView[0].showGridLines = True
     
@@ -746,7 +873,8 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
     c_hero_t.font = FONT_WHITE_HERO
     c_hero_t.alignment = ALIGN_LEFT
     
-    sub_txt = f"  CEDIS Analizados: {cedis_str}   |   Fuente: Extracción Snowflake 2026   |   Actualizado: {fecha_str}"
+    tag_ft_desc = "Contratos (Vigencia >= 2029)" if str(filtro_traope).strip() == '2029' else "Contratos (Vigencia >= 2024)"
+    sub_txt = f"  CEDIS: {cedis_str}   |   TRAOPE: {tag_ft_desc}   |   Fuente: Snowflake 2026   |   {fecha_str}"
     c_hero_s = ws_dash.cell(row=3, column=2, value=sub_txt)
     c_hero_s.font = FONT_WHITE_SUB
     c_hero_s.alignment = ALIGN_LEFT
@@ -833,12 +961,13 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
     }).reset_index().dropna().sort_values(by='Margen Material (MOP %)', ascending=False).head(5)
     
     for idx, row_m in enumerate(df_top_mat.itertuples(), start=12):
+        r_dict = row_m._asdict()
         ws_dash.merge_cells(start_row=idx, start_column=9, end_row=idx, end_column=10)
-        c_mat = ws_dash.cell(row=idx, column=8, value=row_m.Material)
-        c_den = ws_dash.cell(row=idx, column=9, value=row_m.Denominación)
-        c_vta = ws_dash.cell(row=idx, column=11, value=row_m._3)
-        c_cmp = ws_dash.cell(row=idx, column=12, value=row_m._4)
-        c_mop = ws_dash.cell(row=idx, column=13, value=row_m._5)
+        c_mat = ws_dash.cell(row=idx, column=8, value=r_dict.get('Material'))
+        c_den = ws_dash.cell(row=idx, column=9, value=r_dict.get('Denominación'))
+        c_vta = ws_dash.cell(row=idx, column=11, value=r_dict.get('Importe MP'))
+        c_cmp = ws_dash.cell(row=idx, column=12, value=r_dict.get('MP Compra (Costo Material)'))
+        c_mop = ws_dash.cell(row=idx, column=13, value=r_dict.get('Margen Material (MOP %)'))
         
         for cell_item in [c_mat, c_den, c_vta, c_cmp, c_mop]:
             cell_item.border = THIN_BORDER
@@ -852,7 +981,7 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
         c_cmp.alignment = ALIGN_RIGHT
         c_mop.number_format = '0.0%'
         c_mop.alignment = ALIGN_RIGHT
-        c_mop.fill = FILL_GREEN if (row_m._5 or 0) > 0.08 else FILL_REGIONAL
+        c_mop.fill = FILL_GREEN if (r_dict.get('Margen Material (MOP %)') or 0) > 0.08 else FILL_REGIONAL
         
     # --- 5. TABLA DE AUDITORÍA: TOP RUTAS CON ALERTA O DESVIACIÓN ---
     ws_dash.merge_cells("B19:M19")
@@ -874,19 +1003,20 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
     anomalias = df_matriz[(df_matriz['Semaforo'] != 'OK') | (df_matriz['Nivel Autorización / Alerta'].str.contains('Alerta|Nacional', na=False))].head(50)
     
     for r_idx, row in enumerate(anomalias.itertuples(), start=21):
+        r_dict = row._asdict()
         ws_dash.merge_cells(start_row=r_idx, start_column=6, end_row=r_idx, end_column=7)
-        c1 = ws_dash.cell(row=r_idx, column=2, value=getattr(row, 'Concat1', ''))
-        c2 = ws_dash.cell(row=r_idx, column=3, value=getattr(row, 'Centro', ''))
-        c3 = ws_dash.cell(row=r_idx, column=4, value=getattr(row, 'Destino', ''))
-        c4 = ws_dash.cell(row=r_idx, column=5, value=getattr(row, 'Material', ''))
-        c5 = ws_dash.cell(row=r_idx, column=6, value=getattr(row, 'Denominación', ''))
+        c1 = ws_dash.cell(row=r_idx, column=2, value=r_dict.get('Concat1', ''))
+        c2 = ws_dash.cell(row=r_idx, column=3, value=r_dict.get('Centro', ''))
+        c3 = ws_dash.cell(row=r_idx, column=4, value=r_dict.get('Destino', ''))
+        c4 = ws_dash.cell(row=r_idx, column=5, value=r_dict.get('Material', ''))
+        c5 = ws_dash.cell(row=r_idx, column=6, value=r_dict.get('Denominación', ''))
         
-        c6 = ws_dash.cell(row=r_idx, column=8, value=getattr(row, '_15', getattr(row, 'Importe MP', '')))
-        c7 = ws_dash.cell(row=r_idx, column=9, value=getattr(row, '_22', getattr(row, 'MP Compra (Costo Material)', '')))
-        c8 = ws_dash.cell(row=r_idx, column=10, value=getattr(row, '_24', getattr(row, 'Margen Material (MOP %)', '')))
-        c9 = ws_dash.cell(row=r_idx, column=11, value=getattr(row, '_27', getattr(row, 'Nivel Autorización / Alerta', '')))
-        c10 = ws_dash.cell(row=r_idx, column=12, value=getattr(row, 'Semaforo', ''))
-        c11 = ws_dash.cell(row=r_idx, column=13, value=getattr(row, '_29', getattr(row, 'Validacion 2', '')))
+        c6 = ws_dash.cell(row=r_idx, column=8, value=r_dict.get('Importe MP'))
+        c7 = ws_dash.cell(row=r_idx, column=9, value=r_dict.get('MP Compra (Costo Material)'))
+        c8 = ws_dash.cell(row=r_idx, column=10, value=r_dict.get('Margen Material (MOP %)'))
+        c9 = ws_dash.cell(row=r_idx, column=11, value=r_dict.get('Nivel Autorización / Alerta', ''))
+        c10 = ws_dash.cell(row=r_idx, column=12, value=r_dict.get('Semaforo', ''))
+        c11 = ws_dash.cell(row=r_idx, column=13, value=r_dict.get('Validacion 2'))
         
         for c_item in [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11]:
             c_item.border = THIN_BORDER
@@ -936,7 +1066,7 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str):
 # ESCRITURA EN EXCEL FORMATEADO
 # =============================================================================
 
-def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
+def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames, filtro_traope='2024'):
     if df_matriz.empty:
         logging.error("DataFrame vacío, no se generará Excel.")
         return
@@ -955,8 +1085,9 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
         cedis_tag = "TODOS"
         cedis_label = "TODOS LOS CEDIS"
         
+    tag_ft_file = "Contratos2029" if str(filtro_traope).strip() == '2029' else "Contratos2024"
     os.makedirs(out_dir, exist_ok=True)
-    out_file = os.path.join(out_dir, f"Matriz_Precios_Integral_{cedis_tag}_{fecha_str}.xlsx")
+    out_file = os.path.join(out_dir, f"Matriz_Precios_Integral_{cedis_tag}_{tag_ft_file}_{fecha_str}.xlsx")
     
     logging.info(f"Escribiendo Excel: {out_file}")
     wb = openpyxl.Workbook()
@@ -991,6 +1122,8 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
         ('Cond. Expedición', FILL_VENTA, FONT_BLACK_BOLD, 14),
         
         # === CONDICIONES DE COMPRA (Desglosado) ===
+        ('No. Contrato Compra', FILL_COSTO, FONT_BLACK_BOLD, 18),
+        ('Fin Vigencia Compra', FILL_COSTO, FONT_BLACK_BOLD, 16),
         ('Costo Total TRAOPE', FILL_COSTO, FONT_BLACK_BOLD, 16),
         ('Flete Compra', FILL_COSTO, FONT_BLACK_BOLD, 14),
         ('MP Compra (Costo Material)', FILL_COSTO, FONT_BLACK_BOLD, 18),
@@ -1020,17 +1153,17 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
     ws_matriz.merge_cells(start_row=1, start_column=14, end_row=1, end_column=19)
     apply_header_style(ws_matriz.cell(row=1, column=14), "CONDICIONES DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
     
-    ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=24)
+    ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=26)
     apply_header_style(ws_matriz.cell(row=1, column=20), "CONDICIONES DE COMPRA (COSTO)", FILL_NAVY, FONT_WHITE_BOLD)
     
-    ws_matriz.merge_cells(start_row=1, start_column=25, end_row=1, end_column=27)
-    apply_header_style(ws_matriz.cell(row=1, column=25), "GOBERNANZA Y AUTORIZACIÓN", FILL_NAVY, FONT_WHITE_BOLD)
+    ws_matriz.merge_cells(start_row=1, start_column=27, end_row=1, end_column=29)
+    apply_header_style(ws_matriz.cell(row=1, column=27), "GOBERNANZA Y AUTORIZACIÓN", FILL_NAVY, FONT_WHITE_BOLD)
     
-    ws_matriz.merge_cells(start_row=1, start_column=28, end_row=1, end_column=30)
-    apply_header_style(ws_matriz.cell(row=1, column=28), "VALIDACIÓN DE MARGEN", FILL_NAVY, FONT_WHITE_BOLD)
+    ws_matriz.merge_cells(start_row=1, start_column=30, end_row=1, end_column=32)
+    apply_header_style(ws_matriz.cell(row=1, column=30), "VALIDACIÓN DE MARGEN", FILL_NAVY, FONT_WHITE_BOLD)
     
-    ws_matriz.merge_cells(start_row=1, start_column=31, end_row=1, end_column=33)
-    apply_header_style(ws_matriz.cell(row=1, column=31), "CONTRATO DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
+    ws_matriz.merge_cells(start_row=1, start_column=33, end_row=1, end_column=35)
+    apply_header_style(ws_matriz.cell(row=1, column=33), "CONTRATO DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
     
     # Fila 2: Encabezados individuales
     for col_idx, (col_name, fill, font, width) in enumerate(headers, start=1):
@@ -1044,13 +1177,13 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
         
     ws_matriz.freeze_panes = "A3"
     
-    # Orden exacto de columnas para el volcado (33 columnas)
+    # Orden exacto de columnas para el volcado (35 columnas)
     cols_order = [
         'Concat1', 'Concat2', 'Sociedad', 'Ship From', 'Nombre SF',
         'Centro', 'Desc. Centro', 'Destino', 'Material', 'Denominación',
         'PV', 'Inicio Vigencia', 'Fin Vigencia',
         'Clase Cond. MP', 'Importe MP', 'UM Venta', 'Clase Cond. Flete', 'Importe Flete', 'Cond. Expedición',
-        'Costo Total TRAOPE', 'Flete Compra', 'MP Compra (Costo Material)', 'UM Costo', 'Margen Material (MOP %)',
+        'No. Contrato Compra', 'Fin Vigencia Compra', 'Costo Total TRAOPE', 'Flete Compra', 'MP Compra (Costo Material)', 'UM Costo', 'Margen Material (MOP %)',
         'Tipo Operación', 'Precio Referencia', 'Nivel Autorización / Alerta',
         'Validacion 1', 'Validacion 2', 'Semaforo',
         'No. Contrato Venta', 'UM Contrato', 'Precio Contrato'
@@ -1058,6 +1191,13 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
     df_out = df_matriz[cols_order]
     
     for r_idx, row in enumerate(df_out.itertuples(index=False), start=3):
+        # row mapping:
+        # row[2]: Sociedad, row[20]: Fin Vigencia Compra, row[26]: Tipo Operacion
+        soc_val = str(row[2]).strip()
+        tipo_op_val = str(row[26]).strip()
+        fin_vig_compra = row[20]
+        es_expirando = es_proximo_a_vencer(fin_vig_compra) if (tipo_op_val == 'TRADING' or soc_val in ('7180', '7277')) else False
+        
         for c_idx, val in enumerate(row, start=1):
             cell = ws_matriz.cell(row=r_idx, column=c_idx)
             try:
@@ -1073,14 +1213,13 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
             cell.border = THIN_BORDER
             
             # Formatos numéricos y alineaciones
-            if c_idx in [15, 18, 20, 21, 22, 26, 28, 29, 33]: 
+            if c_idx in [15, 18, 22, 23, 24, 28, 30, 31, 35]: 
                 cell.number_format = '$#,##0.00'
                 cell.alignment = ALIGN_RIGHT
-            elif c_idx == 24: # Margen MOP %
+            elif c_idx == 26: # Margen MOP %
                 cell.number_format = '0.0%'
                 cell.alignment = ALIGN_RIGHT
                 if isinstance(val, (int, float)) and pd.notna(val):
-                    soc_val = str(row[2]).strip()
                     if soc_val == '7100':
                         cell.fill = FILL_WHITE
                     elif val < 0.05:
@@ -1092,13 +1231,17 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
             elif c_idx == 11: # PV
                 cell.number_format = '#,##0.000'
                 cell.alignment = ALIGN_RIGHT
-            elif c_idx in [3, 4, 6, 8, 9, 12, 13, 14, 16, 17, 19, 23, 25, 30, 31, 32]:
+            elif c_idx in [3, 4, 6, 8, 9, 12, 13, 14, 16, 17, 19, 20, 21, 25, 27, 32, 33, 34]:
                 cell.alignment = ALIGN_CENTER
             else:
                 cell.alignment = ALIGN_LEFT
                 
-            # Alertas de Gobernanza (Col 27)
-            if c_idx == 27 and isinstance(val, str):
+            # Alerta Próximo a Vencer (+- 2 meses / 60 días) en Contratos de Compra Terceros (Cols 20 y 21)
+            if c_idx in [20, 21] and es_expirando:
+                cell.fill = FILL_WARN
+                
+            # Alertas de Gobernanza (Col 29)
+            if c_idx == 29 and isinstance(val, str):
                 if 'Champion' in val:
                     cell.fill = FILL_GREEN
                 elif 'Regional' in val:
@@ -1107,8 +1250,8 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                     cell.fill = FILL_RED
                     cell.font = FONT_BLACK_BOLD
                     
-            # Semáforo (Col 30)
-            if c_idx == 30 and isinstance(val, str):
+            # Semáforo (Col 32)
+            if c_idx == 32 and isinstance(val, str):
                 if val in ('SIN_FLETE', 'SIN_PV', 'SIN_COSTO', 'SIN_MP'):
                     cell.fill = FILL_ORANGE
                 elif val == 'DIFERENCIA':
@@ -1118,15 +1261,15 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames):
                 elif val == 'OK':
                     cell.fill = FILL_GREEN
                     
-            # Validación 2 amarilla si abs > 1 (Col 29)
-            if c_idx == 29 and isinstance(val, (int, float)) and pd.notna(val):
+            # Validación 2 amarilla si abs > 1 (Col 31)
+            if c_idx == 31 and isinstance(val, (int, float)) and pd.notna(val):
                 if abs(val) > 1:
                     cell.fill = FILL_WARN
                     
     # -------------------------------------------------------------------------
     # Hoja 2: Dashboard Ejecutivo Premium (Hoja Inicial)
     # -------------------------------------------------------------------------
-    construir_dashboard_ejecutivo(wb, df_matriz, cedis_label, fecha_legible)
+    construir_dashboard_ejecutivo(wb, df_matriz, cedis_label, fecha_legible, filtro_traope=filtro_traope)
     
     # -------------------------------------------------------------------------
     # Hojas Ocultas de Respaldo para Auditoría
@@ -1153,6 +1296,13 @@ def main():
     parser.add_argument('--mp', type=str, help="Ruta al archivo TXT de Material (Modo B)")
     parser.add_argument('--flete', type=str, help="Ruta al archivo TXT de Flete (Modo B)")
     parser.add_argument('--cedis', nargs='*', default=None, help="Uno o varios centros CEDIS (ej. D836 D838 DW66 o TODOS)")
+    parser.add_argument(
+        '--filtro-traope',
+        type=str,
+        default='2024',
+        choices=['2024', '2029', 'todos'],
+        help="Filtro de vigencia para contratos TRAOPE: '2024' (Vigencia >= 2024, recomendado), '2029' (Vigencia >= 2029), 'todos' (sin filtro)"
+    )
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_out = os.path.join(script_dir, "_salidas_integradas")
     parser.add_argument('--output', type=str, default=default_out, help="Carpeta de salida")
@@ -1174,15 +1324,19 @@ def main():
         fuente = files[0]
         
         data_raw = cargar_excel(fuente, force_refresh=args.refresh_cache)
-        df_matriz, df_mp, df_flete, df_traope, df_contratos = procesar_datos(data_raw, cedis=args.cedis, modo_a=True)
-        escribir_excel(df_matriz, args.cedis, args.output, [df_mp, df_flete, df_traope, df_contratos])
+        df_matriz, df_mp, df_flete, df_traope, df_contratos = procesar_datos(
+            data_raw, cedis=args.cedis, modo_a=True, filtro_traope=args.filtro_traope
+        )
+        escribir_excel(
+            df_matriz, args.cedis, args.output, [df_mp, df_flete, df_traope, df_contratos], filtro_traope=args.filtro_traope
+        )
         
     elif args.mp and args.flete:
         data_raw = {
             'MP': parse_txt(args.mp),
             'Flete': parse_txt(args.flete)
         }
-        df_matriz, _, _, _, _ = procesar_datos(data_raw, cedis=args.cedis, modo_a=False)
+        df_matriz, _, _, _, _ = procesar_datos(data_raw, cedis=args.cedis, modo_a=False, filtro_traope=args.filtro_traope)
         logging.info("Modo B ejecutado exitosamente.")
     else:
         logging.error("Debe proveer --fuente (Modo A) o --mp y --flete (Modo B)")

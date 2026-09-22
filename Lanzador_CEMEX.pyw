@@ -158,13 +158,47 @@ class LanzadorCEMEXApp:
 
         # 6. CONTADOR DE SELECCIÓN
         self.lbl_count = tk.Label(main_frame, text="", font=FONT_SUB, fg=CLR_MUTED, bg=CLR_BG)
-        self.lbl_count.pack(anchor="w", pady=(0, 8))
+        self.lbl_count.pack(anchor="w", pady=(0, 4))
 
-        # 7. BARRA DE PROGRESO Y ESTATUS
+        # 7. FILTRO DE CONTRATOS DE COMPRA (TRAOPE)
+        frame_opc = tk.LabelFrame(main_frame, text="  Vigencia Contratos Compra (TRAOPE):  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=10, pady=4, relief="groove")
+        frame_opc.pack(fill="x", pady=(0, 8))
+        
+        self.filtro_traope_var = tk.StringVar(value="2024")
+        
+        rb_2024 = tk.Radiobutton(
+            frame_opc,
+            text="Contratos (Vigencia >= 2024)  [Recomendado]",
+            variable=self.filtro_traope_var,
+            value="2024",
+            font=FONT_BODY,
+            bg=CLR_BG,
+            fg=CLR_TEXT,
+            activebackground=CLR_BG,
+            selectcolor=CLR_WHITE,
+            cursor="hand2"
+        )
+        rb_2024.pack(anchor="w", pady=1)
+        
+        rb_2029 = tk.Radiobutton(
+            frame_opc,
+            text="Contratos (Vigencia >= 2029)  [Modo Estricto]",
+            variable=self.filtro_traope_var,
+            value="2029",
+            font=FONT_BODY,
+            bg=CLR_BG,
+            fg=CLR_TEXT,
+            activebackground=CLR_BG,
+            selectcolor=CLR_WHITE,
+            cursor="hand2"
+        )
+        rb_2029.pack(anchor="w", pady=1)
+
+        # 8. BARRA DE PROGRESO Y ESTATUS
         self.progress_bar = ttk.Progressbar(main_frame, mode="indeterminate")
         self.lbl_status = tk.Label(main_frame, text="", font=FONT_SUB, fg=CLR_BLUE_LIGHT, bg=CLR_BG)
 
-        # 8. BOTÓN PRINCIPAL DE GENERACIÓN
+        # 9. BOTÓN PRINCIPAL DE GENERACIÓN
         self.btn_generar = tk.Button(
             main_frame,
             text="🚀  GENERAR MATRIZ Y DASHBOARD (EXCEL)",
@@ -280,18 +314,20 @@ class LanzadorCEMEXApp:
         out_dir = os.path.join(self.base_dir, "_salidas_integradas")
         os.makedirs(out_dir, exist_ok=True)
         
+        filtro_sel = self.filtro_traope_var.get()
+        
         try:
             # 1. Cargar datos maestros (usa caché rápido)
             data_raw = matriz_integrada.cargar_excel(self.source_file, force_refresh=False)
             
-            # 2. Procesar cruce, MOP puro, gobernanza y validaciones
+            # 2. Procesar cruce, MOP puro, gobernanza y validaciones con la vigencia seleccionada
             df_matriz, df_mp, df_flete, df_traope, df_contratos = matriz_integrada.procesar_datos(
-                data_raw, cedis=arg_cedis, modo_a=True
+                data_raw, cedis=arg_cedis, modo_a=True, filtro_traope=filtro_sel
             )
             
             # 3. Construir libro final con Dashboard y Matriz
             archivo_generado = matriz_integrada.escribir_excel(
-                df_matriz, arg_cedis, out_dir, [df_mp, df_flete, df_traope, df_contratos]
+                df_matriz, arg_cedis, out_dir, [df_mp, df_flete, df_traope, df_contratos], filtro_traope=filtro_sel
             )
             
             # Notificar éxito a la UI principal
