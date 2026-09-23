@@ -976,21 +976,24 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_tr
         c.alignment = ALIGN_CENTER
         c.border = THIN_BORDER
         
-    # Top 5 materiales agregados
-    df_top_mat = df_matriz.groupby(['Material', 'Denominación']).agg({
+    # Top 5 materiales con mayor margen (excluyendo filiales 7100 donde MOP es 0%)
+    df_top_candidates = df_matriz[df_matriz['Margen Material (MOP %)'].notna() & (df_matriz['Sociedad'].astype(str).str.strip() != '7100')]
+    if df_top_candidates.empty:
+        df_top_candidates = df_matriz[df_matriz['Margen Material (MOP %)'].notna()]
+        
+    df_top_mat = df_top_candidates.groupby(['Material', 'Denominación']).agg({
         'Importe MP': 'mean',
         'MP Compra (Costo Material)': 'mean',
         'Margen Material (MOP %)': 'mean'
     }).reset_index().dropna().sort_values(by='Margen Material (MOP %)', ascending=False).head(5)
     
-    for idx, row_m in enumerate(df_top_mat.itertuples(), start=12):
-        r_dict = row_m._asdict()
+    for idx, (_, row_m) in enumerate(df_top_mat.iterrows(), start=12):
         ws_dash.merge_cells(start_row=idx, start_column=9, end_row=idx, end_column=10)
-        c_mat = ws_dash.cell(row=idx, column=8, value=r_dict.get('Material'))
-        c_den = ws_dash.cell(row=idx, column=9, value=r_dict.get('Denominación'))
-        c_vta = ws_dash.cell(row=idx, column=11, value=r_dict.get('Importe MP'))
-        c_cmp = ws_dash.cell(row=idx, column=12, value=r_dict.get('MP Compra (Costo Material)'))
-        c_mop = ws_dash.cell(row=idx, column=13, value=r_dict.get('Margen Material (MOP %)'))
+        c_mat = ws_dash.cell(row=idx, column=8, value=row_m['Material'])
+        c_den = ws_dash.cell(row=idx, column=9, value=row_m['Denominación'])
+        c_vta = ws_dash.cell(row=idx, column=11, value=row_m['Importe MP'])
+        c_cmp = ws_dash.cell(row=idx, column=12, value=row_m['MP Compra (Costo Material)'])
+        c_mop = ws_dash.cell(row=idx, column=13, value=row_m['Margen Material (MOP %)'])
         
         for cell_item in [c_mat, c_den, c_vta, c_cmp, c_mop]:
             cell_item.border = THIN_BORDER
@@ -1004,7 +1007,8 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_tr
         c_cmp.alignment = ALIGN_RIGHT
         c_mop.number_format = '0.0%'
         c_mop.alignment = ALIGN_RIGHT
-        c_mop.fill = FILL_GREEN if (r_dict.get('Margen Material (MOP %)') or 0) > 0.08 else FILL_REGIONAL
+        mop_val_top = row_m['Margen Material (MOP %)']
+        c_mop.fill = FILL_GREEN if pd.notna(mop_val_top) and mop_val_top > 0.08 else FILL_REGIONAL
         
     # --- 5. TABLA DE AUDITORÍA: TOP RUTAS CON ALERTA O DESVIACIÓN ---
     ws_dash.merge_cells("B19:M19")
@@ -1025,21 +1029,20 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_tr
         
     anomalias = df_matriz[(df_matriz['Semaforo'] != 'OK') | (df_matriz['Nivel Autorización / Alerta'].str.contains('Alerta|Nacional', na=False))].head(50)
     
-    for r_idx, row in enumerate(anomalias.itertuples(), start=21):
-        r_dict = row._asdict()
+    for r_idx, (_, row) in enumerate(anomalias.iterrows(), start=21):
         ws_dash.merge_cells(start_row=r_idx, start_column=6, end_row=r_idx, end_column=7)
-        c1 = ws_dash.cell(row=r_idx, column=2, value=r_dict.get('Concat1', ''))
-        c2 = ws_dash.cell(row=r_idx, column=3, value=r_dict.get('Centro', ''))
-        c3 = ws_dash.cell(row=r_idx, column=4, value=r_dict.get('Destino', ''))
-        c4 = ws_dash.cell(row=r_idx, column=5, value=r_dict.get('Material', ''))
-        c5 = ws_dash.cell(row=r_idx, column=6, value=r_dict.get('Denominación', ''))
+        c1 = ws_dash.cell(row=r_idx, column=2, value=row.get('Concat1', ''))
+        c2 = ws_dash.cell(row=r_idx, column=3, value=row.get('Centro', ''))
+        c3 = ws_dash.cell(row=r_idx, column=4, value=row.get('Destino', ''))
+        c4 = ws_dash.cell(row=r_idx, column=5, value=row.get('Material', ''))
+        c5 = ws_dash.cell(row=r_idx, column=6, value=row.get('Denominación', ''))
         
-        c6 = ws_dash.cell(row=r_idx, column=8, value=r_dict.get('Importe MP'))
-        c7 = ws_dash.cell(row=r_idx, column=9, value=r_dict.get('MP Compra (Costo Material)'))
-        c8 = ws_dash.cell(row=r_idx, column=10, value=r_dict.get('Margen Material (MOP %)'))
-        c9 = ws_dash.cell(row=r_idx, column=11, value=r_dict.get('Nivel Autorización / Alerta', ''))
-        c10 = ws_dash.cell(row=r_idx, column=12, value=r_dict.get('Semaforo', ''))
-        c11 = ws_dash.cell(row=r_idx, column=13, value=r_dict.get('Validacion 2'))
+        c6 = ws_dash.cell(row=r_idx, column=8, value=row.get('Importe MP'))
+        c7 = ws_dash.cell(row=r_idx, column=9, value=row.get('MP Compra (Costo Material)'))
+        c8 = ws_dash.cell(row=r_idx, column=10, value=row.get('Margen Material (MOP %)'))
+        c9 = ws_dash.cell(row=r_idx, column=11, value=row.get('Nivel Autorización / Alerta', ''))
+        c10 = ws_dash.cell(row=r_idx, column=12, value=row.get('Semaforo', ''))
+        c11 = ws_dash.cell(row=r_idx, column=13, value=row.get('Validacion 2'))
         
         for c_item in [c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11]:
             c_item.border = THIN_BORDER
