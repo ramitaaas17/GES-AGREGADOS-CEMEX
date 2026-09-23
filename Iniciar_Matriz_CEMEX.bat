@@ -1,6 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-title CEMEX Agregados - Instalador y Lanzador Universal
+title CEMEX Agregados - Instalador y Lanzador 100% Automatico
 chcp 65001 >nul
 cd /d "%~dp0"
 
@@ -11,7 +11,8 @@ echo.
 
 set "PY_EXE="
 
-:: 1. Probar comandos estandar en PATH
+:: 1. Buscar si Python ya esta instalado en PATH o rutas comunes
+:buscar_python
 where py >nul 2>&1
 if %errorlevel% equ 0 (
     set "PY_EXE=py"
@@ -20,7 +21,6 @@ if %errorlevel% equ 0 (
 
 where python >nul 2>&1
 if %errorlevel% equ 0 (
-    :: Verificar que no sea el alias vacio de la tienda
     python -c "import sys" >nul 2>&1
     if !errorlevel! equ 0 (
         set "PY_EXE=python"
@@ -37,7 +37,6 @@ if %errorlevel% equ 0 (
     )
 )
 
-:: 2. Busqueda dinamica en carpetas de instalacion de TODAS las versiones (3.8 a 3.15)
 for /d %%D in ("%LocalAppData%\Programs\Python\Python*") do (
     if exist "%%D\python.exe" (
         set "PY_EXE=%%D\python.exe"
@@ -66,14 +65,6 @@ for /d %%D in ("C:\Python*") do (
     )
 )
 
-for /d %%D in ("%ProgramData%\Python*") do (
-    if exist "%%D\python.exe" (
-        set "PY_EXE=%%D\python.exe"
-        goto :python_found
-    )
-)
-
-:: 3. Busqueda en WindowsApps (Microsoft Store)
 for /d %%D in ("%LocalAppData%\Microsoft\WindowsApps\PythonHardwareCompany.Python*") do (
     if exist "%%D\python.exe" (
         set "PY_EXE=%%D\python.exe"
@@ -81,31 +72,40 @@ for /d %%D in ("%LocalAppData%\Microsoft\WindowsApps\PythonHardwareCompany.Pytho
     )
 )
 
-:: Si no se encontro ninguna version instalada
-echo [!] No se detecto ninguna instalacion de Python en este equipo.
+:: 2. Si no esta instalado, DESCARGAR E INSTALAR DIRECTAMENTE DESDE CMD (100% AUTOMATICO)
+echo [!] Python no esta presente en este equipo.
+echo [*] Descargando e instalando Python automaticamente desde CMD...
+echo     (No necesitas hacer nada, esto tomara aprox. 20 segundos)...
 echo.
-echo [*] Abriendo Microsoft Store para instalar Python con 1 solo clic...
-echo     (Haz clic en 'Obtener' o 'Instalar' en la ventana de la tienda).
-echo.
-start ms-windows-store://search/?query=Python
-echo Presiona cualquier tecla una vez que termine de instalarse en la tienda...
-pause >nul
 
-:: Reintentar busqueda general
-for /d %%D in ("%LocalAppData%\Programs\Python\Python*") do (
-    if exist "%%D\python.exe" (
-        set "PY_EXE=%%D\python.exe"
-        goto :python_found
+:: Intento 1: Winget (Windows Package Manager oficial de Windows 10/11)
+where winget >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [*] Descargando mediante Winget...
+    winget install Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo [OK] Python instalado exitosamente via Winget.
+        goto :buscar_python
     )
 )
 
-where python >nul 2>&1
-if %errorlevel% equ 0 (
-    set "PY_EXE=python"
-    goto :python_found
+:: Intento 2: Curl oficial + Instalacion silenciosa de Python oficial
+echo [*] Descargando instalador oficial de Python via Curl...
+set "INSTALLER_TMP=%TEMP%\python_installer_cemex.exe"
+curl -L -s -o "!INSTALLER_TMP!" "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe"
+
+if exist "!INSTALLER_TMP!" (
+    echo [*] Instalando Python en segundo plano con PATH habilitado...
+    "!INSTALLER_TMP!" /quiet InstallAllUsers=0 PrependPath=1 Include_test=0 SimpleInstall=1
+    del /f /q "!INSTALLER_TMP!" >nul 2>&1
+    timeout /t 5 /nobreak >nul
+    goto :buscar_python
 )
 
-echo [!] Por favor vuelve a abrir este archivo una vez completada la instalacion.
+:: Si fallo conexion o bloqueo estricto
+echo [!] No se pudo descargar automaticamente por politicas de red.
+echo [*] Abriendo la tienda Microsoft Store para 1 clic manual...
+start ms-windows-store://search/?query=Python
 pause
 exit /b 1
 
@@ -113,7 +113,7 @@ exit /b 1
 "%PY_EXE%" -c "import sys; print(sys.version)" >nul 2>&1
 if %errorlevel% neq 0 (
     set "PY_EXE="
-    goto :python_found
+    goto :buscar_python
 )
 
 :python_found
@@ -121,7 +121,7 @@ echo [OK] Python detectado correctamente: %PY_EXE%
 "%PY_EXE%" -c "import sys; print('     Version: ' + sys.version.split()[0])"
 echo.
 
-:: 2. Instalar dependencias necesarias automaticamente
+:: 3. Instalar dependencias necesarias automaticamente
 echo [*] Verificando componentes (pandas, openpyxl)...
 "%PY_EXE%" -c "import pandas, openpyxl" >nul 2>&1
 if %errorlevel% neq 0 (
@@ -137,7 +137,7 @@ if %errorlevel% neq 0 (
     echo [OK] Componentes listos.
 )
 
-:: 3. Crear Acceso Directo automatico en el Escritorio
+:: 4. Crear Acceso Directo automatico en el Escritorio
 set "SCRIPT_DIR=%~dp0"
 set "SHORTCUT_PATH=%USERPROFILE%\Desktop\CEMEX - Matriz de Precios.lnk"
 set "TARGET_SCRIPT=%SCRIPT_DIR%Lanzador_CEMEX.pyw"
@@ -148,7 +148,7 @@ if exist "%SHORTCUT_PATH%" (
     echo [OK] Acceso directo disponible en tu Escritorio: "CEMEX - Matriz de Precios"
 )
 
-:: 4. Iniciar la aplicacion de inmediato
+:: 5. Iniciar la aplicacion de inmediato
 echo.
 echo [*] Iniciando interfaz grafica CEMEX...
 start "" "%TARGET_SCRIPT%"
