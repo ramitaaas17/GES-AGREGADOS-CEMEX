@@ -121,11 +121,17 @@ def calc_validacion1(um_venta, um_costo, cond_exp, importe_mp, importe_flete, pv
         res = (mp + (flete if flete is not None else 0)) * pv
     return round(res, 2)
 
-def calc_validacion2(importe_costo, validacion1):
+def calc_validacion2(importe_costo, validacion1, sociedad=None):
     """
     Desviación Real vs Teórico: Costo_TRAOPE - Validación_1.
-    Redondeado a 2 decimales con tolerancia de 5 centavos para eliminar ruido flotante.
+    - Exclusivo para Sociedad 7100 (Filiales / Intercompañía), donde las transferencias son al costo.
+    - Para Sociedades 7180 y 7277 (Trading / Terceros), se devuelve None (N/A) ya que el margen comercial
+      se audita mediante la columna Margen Material (MOP %) y la Gobernanza de Autorizaciones.
     """
+    soc = str(sociedad).strip() if sociedad is not None else ""
+    if soc in ('7180', '7277') or (soc != '7100' and soc != ""):
+        return None
+        
     if pd.isna(importe_costo) or pd.isna(validacion1):
         return None
     diff = round(importe_costo - validacion1, 2)
@@ -221,12 +227,13 @@ def eval_autorizacion(sociedad, tipo_operacion, precio_venta, precio_referencia,
 
 def eval_semaforo(row):
     """
-    Semáforo de inconsistencias operativas:
+    Semáforo de inconsistencias operativas y cumplimiento de negocio:
     - SIN_MP: falta precio de venta de material
     - SIN_FLETE: en modalidad entregada (01/04), no se encontró flete
     - SIN_COSTO: en trading, no se encontró orden de compra
     - SIN_PV: falta factor de peso volumétrico
-    - DIFERENCIA: desviación mayor a $1 entre costo real y teórico
+    - DIFERENCIA: desviación mayor a $1 entre costo real y teórico (exclusivo para 7100 filiales al costo)
+    - ALERTA_MARGEN: en trading (7180/7277), margen menor al 5% (requiere revisión Nacional)
     - DISCREPANCIA_ORG: condición inválida por sociedad
     - OK: registro correcto y alineado
     """
@@ -243,10 +250,11 @@ def eval_semaforo(row):
             return 'SIN_FLETE'
             
     tipo_op = row.get('Tipo Operación', '')
+    sociedad = str(row.get('Sociedad', '')).strip()
     costo = row.get('Costo Total TRAOPE') if 'Costo Total TRAOPE' in row else row.get('MP Compra (Costo Material)')
     if costo is None or pd.isna(costo):
         costo = row.get('Importe Costo')
-    if tipo_op == 'TRADING' and (pd.isna(costo) or costo is None or costo <= 0):
+    if (tipo_op == 'TRADING' or sociedad in ('7180', '7277')) and (pd.isna(costo) or costo is None or costo <= 0):
         return 'SIN_COSTO'
         
     if pd.isna(row.get('Validacion 1')):
@@ -256,11 +264,18 @@ def eval_semaforo(row):
             if pd.isna(row.get('PV')):
                 return 'SIN_PV'
                 
-    v2 = row.get('Validacion 2')
-    if pd.notna(v2) and abs(v2) > 1:
-        return 'DIFERENCIA'
+    # Para Sociedad 7100 (Filial al costo): auditar si hay desviación contable
+    if sociedad == '7100':
+        v2 = row.get('Validacion 2')
+        if pd.notna(v2) and abs(v2) > 1:
+            return 'DIFERENCIA'
+    else:
+        # Para Trading (7180/7277): auditar si el margen cae por debajo del 5%
+        mop = row.get('Margen Material (MOP %)')
+        if pd.notna(mop) and mop < 0.05:
+            return 'ALERTA_MARGEN'
         
-    org = str(row.get('Sociedad', '')).strip()
+    org = sociedad
     clase_mp = str(row.get('Clase Cond. MP', '')).strip()
     if org == '7100' and (clase_mp in ['ZMA6', 'ZMP1']):
         return 'DISCREPANCIA_ORG'
@@ -747,7 +762,7 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
             
             # Validaciones Integrales
             val1 = calc_validacion1(um_venta, um_costo, cond_exp, imp_mp, imp_flete, pv_val)
-            val2 = calc_validacion2(imp_costo_total, val1)
+            val2 = calc_validacion2(imp_costo_total, val1, sociedad_str)
             
             # Armado de fila con precio junto a cada condición
             fila_dict = {
@@ -1282,14 +1297,17 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames, filtro_traope='20
                     cell.fill = FILL_ORANGE
                 elif val == 'DIFERENCIA':
                     cell.fill = FILL_WARN
+                elif val == 'ALERTA_MARGEN':
+                    cell.fill = FILL_RED
+                    cell.font = FONT_BLACK_BOLD
                 elif val == 'DISCREPANCIA_ORG':
                     cell.fill = FILL_RED
                 elif val == 'OK':
                     cell.fill = FILL_GREEN
                     
-            # Validación 2 amarilla si abs > 1 (Col 31)
+            # Validación 2 amarilla si abs > 1 (Col 31) (Exclusivo para Filiales 7100)
             if c_idx == 31 and isinstance(val, (int, float)) and pd.notna(val):
-                if abs(val) > 1:
+                if abs(val) > 1 and soc_val == '7100':
                     cell.fill = FILL_WARN
                     
     # -------------------------------------------------------------------------
