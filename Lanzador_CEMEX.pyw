@@ -34,12 +34,12 @@ class LanzadorCEMEXApp:
     def __init__(self, root):
         self.root = root
         self.root.title("CEMEX | Sistema Integral de Matriz de Precios y Gobernanza")
-        self.root.geometry("460x620")
-        self.root.minsize(420, 560)
+        self.root.geometry("490x720")
+        self.root.minsize(450, 650)
         self.root.configure(bg=CLR_BG)
         
         # Centrar ventana en pantalla
-        self.centrar_ventana(460, 620)
+        self.centrar_ventana(490, 720)
         
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.source_file = self.detectar_archivo_fuente()
@@ -162,7 +162,7 @@ class LanzadorCEMEXApp:
 
         # 7. FILTRO DE CONTRATOS DE COMPRA (TRAOPE)
         frame_opc = tk.LabelFrame(main_frame, text="  Vigencia Contratos Compra (TRAOPE):  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=10, pady=4, relief="groove")
-        frame_opc.pack(fill="x", pady=(0, 8))
+        frame_opc.pack(fill="x", pady=(0, 6))
         
         self.filtro_traope_var = tk.StringVar(value="2024")
         
@@ -194,11 +194,73 @@ class LanzadorCEMEXApp:
         )
         rb_2029.pack(anchor="w", pady=1)
 
-        # 8. BARRA DE PROGRESO Y ESTATUS
+        # 8. ORGANIZACIÓN DE HOJAS / PESTAÑAS EN EXCEL
+        frame_fmt = tk.LabelFrame(main_frame, text="  Organización de Pestañas en Excel:  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=10, pady=4, relief="groove")
+        frame_fmt.pack(fill="x", pady=(0, 8))
+        
+        self.formato_hojas_var = tk.StringVar(value="por_cedis")
+        
+        rb_fmt1 = tk.Radiobutton(
+            frame_fmt,
+            text="📑 Pestaña por cada CEDIS  [Recomendado]",
+            variable=self.formato_hojas_var,
+            value="por_cedis",
+            font=FONT_BODY,
+            bg=CLR_BG,
+            fg=CLR_TEXT,
+            activebackground=CLR_BG,
+            selectcolor=CLR_WHITE,
+            cursor="hand2"
+        )
+        rb_fmt1.pack(anchor="w", pady=1)
+        
+        rb_fmt2 = tk.Radiobutton(
+            frame_fmt,
+            text="📊 En una sola hoja (Consolidado Global)",
+            variable=self.formato_hojas_var,
+            value="consolidado",
+            font=FONT_BODY,
+            bg=CLR_BG,
+            fg=CLR_TEXT,
+            activebackground=CLR_BG,
+            selectcolor=CLR_WHITE,
+            cursor="hand2"
+        )
+        rb_fmt2.pack(anchor="w", pady=1)
+
+        rb_fmt3 = tk.Radiobutton(
+            frame_fmt,
+            text="🏢 Pestaña por Sociedad (7100 Filiales / 7180-7277 Trading)",
+            variable=self.formato_hojas_var,
+            value="por_sociedad",
+            font=FONT_BODY,
+            bg=CLR_BG,
+            fg=CLR_TEXT,
+            activebackground=CLR_BG,
+            selectcolor=CLR_WHITE,
+            cursor="hand2"
+        )
+        rb_fmt3.pack(anchor="w", pady=1)
+
+        rb_fmt4 = tk.Radiobutton(
+            frame_fmt,
+            text="🌟 Híbrido (Consolidado Global + Pestañas por CEDIS)",
+            variable=self.formato_hojas_var,
+            value="hibrido",
+            font=FONT_BODY,
+            bg=CLR_BG,
+            fg=CLR_TEXT,
+            activebackground=CLR_BG,
+            selectcolor=CLR_WHITE,
+            cursor="hand2"
+        )
+        rb_fmt4.pack(anchor="w", pady=1)
+
+        # 9. BARRA DE PROGRESO Y ESTATUS
         self.progress_bar = ttk.Progressbar(main_frame, mode="indeterminate")
         self.lbl_status = tk.Label(main_frame, text="", font=FONT_SUB, fg=CLR_BLUE_LIGHT, bg=CLR_BG)
 
-        # 9. BOTÓN PRINCIPAL DE GENERACIÓN
+        # 10. BOTÓN PRINCIPAL DE GENERACIÓN
         self.btn_generar = tk.Button(
             main_frame,
             text="🚀  GENERAR MATRIZ Y DASHBOARD (EXCEL)",
@@ -315,6 +377,7 @@ class LanzadorCEMEXApp:
         os.makedirs(out_dir, exist_ok=True)
         
         filtro_sel = self.filtro_traope_var.get()
+        fmt_sel = self.formato_hojas_var.get()
         
         try:
             # 1. Cargar datos maestros (usa caché rápido)
@@ -325,9 +388,10 @@ class LanzadorCEMEXApp:
                 data_raw, cedis=arg_cedis, modo_a=True, filtro_traope=filtro_sel
             )
             
-            # 3. Construir libro final con Dashboard y Matriz
+            # 3. Construir libro final con Dashboard y Matriz según formato de hojas
             archivo_generado = matriz_integrada.escribir_excel(
-                df_matriz, arg_cedis, out_dir, [df_mp, df_flete, df_traope, df_contratos], filtro_traope=filtro_sel
+                df_matriz, arg_cedis, out_dir, [df_mp, df_flete, df_traope, df_contratos],
+                filtro_traope=filtro_sel, formato_hojas=fmt_sel
             )
             
             # Notificar éxito a la UI principal

@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import glob
 import time
 import pickle
@@ -15,6 +16,23 @@ from openpyxl.utils import get_column_letter
 
 # Configuración de Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Expresión regular para eliminar caracteres de control ilegales en XML/Excel (evita error de recuperación de Excel)
+RE_ILLEGAL_XML = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x84\x86-\x9f]')
+
+def sanitize_xml(val):
+    """Limpia caracteres de control invisibles que corrompen el XML de Excel."""
+    if isinstance(val, str):
+        return RE_ILLEGAL_XML.sub('', val)
+    return val
+
+def sanitize_sheet_name(name, default="Hoja"):
+    """Garantiza que el nombre de pestaña cumpla con las reglas estrictas de Excel (max 31 chars, sin caracteres prohibidos)."""
+    if not name:
+        return default
+    clean = re.sub(r'[\\/*?:\[\]]', '_', str(name).strip())
+    clean = clean[:31].strip()
+    return clean or default
 
 # =============================================================================
 # PALETA DE COLORES CORPORATIVA CEMEX
@@ -1104,41 +1122,11 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_tr
                 c11.fill = FILL_WARN
 
 # =============================================================================
-# ESCRITURA EN EXCEL FORMATEADO
+# ESCRITURA EN EXCEL FORMATEADO Y ORGANIZACIÓN DE HOJAS
 # =============================================================================
 
-def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames, filtro_traope='2024'):
-    if df_matriz.empty:
-        logging.error("DataFrame vacío, no se generará Excel.")
-        return
-        
-    fecha_dt = datetime.now()
-    fecha_str = fecha_dt.strftime('%Y%m%d_%H%M%S')
-    fecha_legible = fecha_dt.strftime('%d/%m/%Y %H:%M')
-    
-    if isinstance(cedis, (list, tuple)):
-        cedis_tag = "_".join(cedis[:3]) + (f"_y_{len(cedis)-3}_mas" if len(cedis)>3 else "")
-        cedis_label = ", ".join(cedis)
-    elif cedis:
-        cedis_tag = str(cedis).replace(' ', '_').replace(',', '_')
-        cedis_label = str(cedis)
-    else:
-        cedis_tag = "TODOS"
-        cedis_label = "TODOS LOS CEDIS"
-        
-    tag_ft_file = "Contratos2029" if str(filtro_traope).strip() == '2029' else "Contratos2024"
-    os.makedirs(out_dir, exist_ok=True)
-    out_file = os.path.join(out_dir, f"Matriz_Precios_Integral_{cedis_tag}_{tag_ft_file}_{fecha_str}.xlsx")
-    
-    logging.info(f"Escribiendo Excel: {out_file}")
-    wb = openpyxl.Workbook()
-    
-    # -------------------------------------------------------------------------
-    # Hoja 1: Matriz de Datos Detallada
-    # -------------------------------------------------------------------------
-    ws_matriz = wb.active
-    ws_matriz.title = "Matriz"
-    
+def poblar_hoja_matriz(ws_matriz, df_matriz_sub, sheet_title="Matriz"):
+    """Puebla una hoja de cálculo con el formato corporativo CEMEX (35 columnas, 2 filas de encabezado y estilos)."""
     headers = [
         ('Concat1', FILL_HEADER, FONT_BLACK_BOLD, 30),
         ('Concat2', FILL_HEADER, FONT_BLACK_BOLD, 25),
@@ -1218,24 +1206,27 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames, filtro_traope='20
         
     ws_matriz.freeze_panes = "A3"
     
-    # Orden exacto de columnas para el volcado (35 columnas)
     cols_order = [
         'Concat1', 'Concat2', 'Sociedad', 'Ship From', 'Nombre SF',
         'Centro', 'Desc. Centro', 'Destino', 'Material', 'Denominación',
         'PV', 'Inicio Vigencia', 'Fin Vigencia',
         'Clase Cond. MP', 'Importe MP', 'UM Venta', 'Clase Cond. Flete', 'Importe Flete', 'Cond. Expedición',
         'No. Contrato Compra', 'Fin Vigencia Compra', 'Costo Total TRAOPE', 'Flete Compra', 'MP Compra (Costo Material)', 'UM Costo', 'Margen Material (MOP %)',
-        'Tipo Operación', 'Precio Referencia', 'Nivel Autorización / Alerta',
+        'Tipo Operación', 'Precio Referencia Base', 'Nivel Autorización / Alerta',
         'Validacion 1', 'Validacion 2', 'Semaforo',
         'No. Contrato Venta', 'UM Contrato', 'Precio Contrato'
     ]
-    df_out = df_matriz[cols_order]
+    
+    df_sub_copy = df_matriz_sub.copy()
+    for c in cols_order:
+        if c not in df_sub_copy.columns:
+            df_sub_copy[c] = None
+            
+    df_out = df_sub_copy[cols_order]
     
     for r_idx, row in enumerate(df_out.itertuples(index=False), start=3):
-        # row mapping:
-        # row[2]: Sociedad, row[20]: Fin Vigencia Compra, row[26]: Tipo Operacion
-        soc_val = str(row[2]).strip()
-        tipo_op_val = str(row[26]).strip()
+        soc_val = str(row[2]).strip() if row[2] is not None else ""
+        tipo_op_val = str(row[26]).strip() if row[26] is not None else ""
         fin_vig_compra = row[20]
         es_expirando = es_proximo_a_vencer(fin_vig_compra) if (tipo_op_val == 'TRADING' or soc_val in ('7180', '7277')) else False
         
@@ -1245,10 +1236,11 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames, filtro_traope='20
                 is_na = pd.isna(val)
             except (TypeError, ValueError):
                 is_na = False
+                
             if is_na:
                 cell.value = ""
             else:
-                cell.value = val
+                cell.value = sanitize_xml(val)
                 
             cell.font = FONT_NORMAL
             cell.border = THIN_BORDER
@@ -1309,25 +1301,136 @@ def escribir_excel(df_matriz, cedis, out_dir, raw_data_frames, filtro_traope='20
             if c_idx == 31 and isinstance(val, (int, float)) and pd.notna(val):
                 if abs(val) > 1 and soc_val == '7100':
                     cell.fill = FILL_WARN
-                    
-    # -------------------------------------------------------------------------
-    # Hoja 2: Dashboard Ejecutivo Premium (Hoja Inicial)
-    # -------------------------------------------------------------------------
+
+def escribir_excel(df_matriz, cedis=None, out_dir=None, raw_data_frames=None, filtro_traope='2024', formato_hojas='consolidado'):
+    """
+    Genera el archivo Excel corporativo CEMEX optimizado con Dashboard y distribución de hojas seleccionada.
+    
+    Modalidades de formato_hojas:
+    - 'consolidado': Dashboard + 1 sola hoja 'Matriz' con todos los registros.
+    - 'por_cedis': Dashboard + 1 pestaña por cada centro CEDIS (ej. 'CEDIS_D836', 'CEDIS_D838').
+    - 'por_sociedad': Dashboard + pestañas separadas por Sociedad ('7100 - Filiales', '7180 - Trading', etc.).
+    - 'hibrido': Dashboard + 1 pestaña global consolidada + pestañas individuales por CEDIS.
+    """
+    if df_matriz.empty:
+        logging.error("DataFrame vacío, no se generará Excel.")
+        return None
+        
+    fecha_dt = datetime.now()
+    fecha_str = fecha_dt.strftime('%Y%m%d_%H%M%S')
+    fecha_legible = fecha_dt.strftime('%d/%m/%Y %H:%M')
+    
+    # Construcción compacta y limpia del nombre de archivo (evita error de longitud en Windows)
+    if isinstance(cedis, (list, tuple)):
+        cedis_clean = [str(c).strip().upper() for c in cedis if str(c).strip().upper() not in ('TODOS', '')]
+        if len(cedis_clean) == 0:
+            cedis_tag = "TODOS"
+            cedis_label = "TODOS LOS CEDIS"
+        elif len(cedis_clean) == 1:
+            cedis_tag = cedis_clean[0]
+            cedis_label = cedis_clean[0]
+        elif len(cedis_clean) <= 3:
+            cedis_tag = "_".join(cedis_clean)
+            cedis_label = ", ".join(cedis_clean)
+        else:
+            cedis_tag = f"MultiCEDIS_{len(cedis_clean)}Centros"
+            cedis_label = f"{len(cedis_clean)} CEDIS ({', '.join(cedis_clean[:3])}...)"
+    elif cedis and str(cedis).strip().upper() not in ('TODOS', ''):
+        c_clean = str(cedis).strip().replace(' ', '_').replace(',', '_')
+        cedis_tag = c_clean[:25]
+        cedis_label = str(cedis).strip()
+    else:
+        cedis_tag = "TODOS"
+        cedis_label = "TODOS LOS CEDIS"
+        
+    fmt_tag = {
+        'consolidado': 'Consolidado',
+        'por_cedis': 'PorCEDIS',
+        'por_sociedad': 'PorSociedad',
+        'hibrido': 'Hibrido'
+    }.get(formato_hojas, 'Consolidado')
+    
+    tag_ft_file = "C2029" if str(filtro_traope).strip() == '2029' else "C2024"
+    if out_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        out_dir = os.path.join(script_dir, "_salidas_integradas")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    out_file = os.path.join(out_dir, f"Matriz_Precios_{cedis_tag}_{fmt_tag}_{tag_ft_file}_{fecha_str}.xlsx")
+    logging.info(f"Escribiendo Excel con formato '{formato_hojas}': {out_file}")
+    
+    wb = openpyxl.Workbook()
+    
+    # Modo 1: Consolidado (1 sola hoja Matriz)
+    if formato_hojas == 'consolidado':
+        ws_matriz = wb.active
+        ws_matriz.title = "Matriz"
+        poblar_hoja_matriz(ws_matriz, df_matriz, "Matriz")
+        
+    # Modo 2: Pestaña individual por cada CEDIS
+    elif formato_hojas == 'por_cedis':
+        centros = sorted([str(c) for c in df_matriz['Centro'].dropna().unique()])
+        first = True
+        for c in centros:
+            df_c = df_matriz[df_matriz['Centro'].astype(str) == c]
+            if df_c.empty:
+                continue
+            title_sheet = sanitize_sheet_name(f"CEDIS_{c}")
+            if first:
+                ws_c = wb.active
+                ws_c.title = title_sheet
+                first = False
+            else:
+                ws_c = wb.create_sheet(title=title_sheet)
+            poblar_hoja_matriz(ws_c, df_c, f"CEDIS {c}")
+            
+    # Modo 3: Pestaña por Sociedad / Org. Ventas
+    elif formato_hojas == 'por_sociedad':
+        sociedades = sorted([str(s) for s in df_matriz['Sociedad'].dropna().unique()])
+        map_soc_names = {
+            '7100': '7100 - Filiales Concretos',
+            '7180': '7180 - Agregados Trading',
+            '7277': '7277 - Trading Terceros'
+        }
+        first = True
+        for s in sociedades:
+            df_s = df_matriz[df_matriz['Sociedad'].astype(str) == s]
+            if df_s.empty:
+                continue
+            s_nom = map_soc_names.get(s, f"Sociedad_{s}")
+            title_sheet = sanitize_sheet_name(s_nom)
+            if first:
+                ws_s = wb.active
+                ws_s.title = title_sheet
+                first = False
+            else:
+                ws_s = wb.create_sheet(title=title_sheet)
+            poblar_hoja_matriz(ws_s, df_s, s_nom)
+            
+    # Modo 4: Híbrido (Matriz Global Consolidada + Pestañas por CEDIS)
+    elif formato_hojas == 'hibrido':
+        ws_global = wb.active
+        ws_global.title = "Matriz Global"
+        poblar_hoja_matriz(ws_global, df_matriz, "Matriz Global")
+        
+        centros = sorted([str(c) for c in df_matriz['Centro'].dropna().unique()])
+        for c in centros:
+            df_c = df_matriz[df_matriz['Centro'].astype(str) == c]
+            if df_c.empty:
+                continue
+            title_sheet = sanitize_sheet_name(f"CEDIS_{c}")
+            ws_c = wb.create_sheet(title=title_sheet)
+            poblar_hoja_matriz(ws_c, df_c, f"CEDIS {c}")
+    else:
+        ws_matriz = wb.active
+        ws_matriz.title = "Matriz"
+        poblar_hoja_matriz(ws_matriz, df_matriz, "Matriz")
+        
+    # Construcción de la Hoja 1: Dashboard Ejecutivo (siempre al inicio en index=0)
     construir_dashboard_ejecutivo(wb, df_matriz, cedis_label, fecha_legible, filtro_traope=filtro_traope)
     
-    # -------------------------------------------------------------------------
-    # Hojas Ocultas de Respaldo para Auditoría
-    # -------------------------------------------------------------------------
-    if raw_data_frames:
-        for name, df in zip(['_MP', '_Flete', '_TRAOPE', '_Contratos'], raw_data_frames):
-            if df is not None and not df.empty:
-                ws_h = wb.create_sheet(title=name)
-                for r in dataframe_to_rows(df, index=False, header=True):
-                    ws_h.append(r)
-                ws_h.sheet_state = 'hidden'
-                
     wb.save(out_file)
-    logging.info(f"¡Excel guardado exitosamente!")
+    logging.info(f"¡Excel guardado exitosamente sin errores de XML!")
     return out_file
 
 # =============================================================================
@@ -1346,6 +1449,13 @@ def main():
         default='2024',
         choices=['2024', '2029', 'todos'],
         help="Filtro de vigencia para contratos TRAOPE: '2024' (Vigencia >= 2024, recomendado), '2029' (Vigencia >= 2029), 'todos' (sin filtro)"
+    )
+    parser.add_argument(
+        '--formato-hojas',
+        type=str,
+        default='consolidado',
+        choices=['consolidado', 'por_cedis', 'por_sociedad', 'hibrido'],
+        help="Organización de pestañas en Excel: 'consolidado' (1 sola hoja), 'por_cedis' (pestaña por CEDIS), 'por_sociedad' (pestaña por sociedad), 'hibrido' (global + por cedis)"
     )
     script_dir = os.path.dirname(os.path.abspath(__file__))
     default_out = os.path.join(script_dir, "_salidas_integradas")
@@ -1372,16 +1482,25 @@ def main():
             data_raw, cedis=args.cedis, modo_a=True, filtro_traope=args.filtro_traope
         )
         escribir_excel(
-            df_matriz, args.cedis, args.output, [df_mp, df_flete, df_traope, df_contratos], filtro_traope=args.filtro_traope
+            df_matriz,
+            cedis=args.cedis,
+            out_dir=args.output,
+            raw_data_frames=[df_mp, df_flete, df_traope, df_contratos],
+            filtro_traope=args.filtro_traope,
+            formato_hojas=args.formato_hojas
         )
-        
     elif args.mp and args.flete:
-        data_raw = {
-            'MP': parse_txt(args.mp),
-            'Flete': parse_txt(args.flete)
-        }
-        df_matriz, _, _, _, _ = procesar_datos(data_raw, cedis=args.cedis, modo_a=False, filtro_traope=args.filtro_traope)
-        logging.info("Modo B ejecutado exitosamente.")
+        df_mp = parsear_txt(args.mp)
+        df_flete = parsear_txt(args.flete)
+        df_matriz = cruzar_todo(df_mp, df_flete, None, None, None, cedis=args.cedis, modo_a=False)
+        escribir_excel(
+            df_matriz,
+            cedis=args.cedis,
+            out_dir=args.output,
+            raw_data_frames=[df_mp, df_flete, None, None],
+            filtro_traope=args.filtro_traope,
+            formato_hojas=args.formato_hojas
+        )
     else:
         logging.error("Debe proveer --fuente (Modo A) o --mp y --flete (Modo B)")
         
@@ -1389,3 +1508,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
