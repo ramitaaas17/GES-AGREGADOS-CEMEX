@@ -34,12 +34,12 @@ class LanzadorCEMEXApp:
     def __init__(self, root):
         self.root = root
         self.root.title("CEMEX | Sistema Integral de Matriz de Precios y Gobernanza")
-        self.root.geometry("490x720")
-        self.root.minsize(450, 650)
+        self.root.geometry("580x640")
+        self.root.minsize(480, 480)
         self.root.configure(bg=CLR_BG)
         
         # Centrar ventana en pantalla
-        self.centrar_ventana(490, 720)
+        self.centrar_ventana(580, 640)
         
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.source_file = self.detectar_archivo_fuente()
@@ -63,8 +63,8 @@ class LanzadorCEMEXApp:
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
         sh = self.root.winfo_screenheight()
-        x = (sw - ancho) // 2
-        y = (sh - alto) // 2
+        x = max(0, (sw - ancho) // 2)
+        y = max(0, (sh - alto) // 2)
         self.root.geometry(f"{ancho}x{alto}+{x}+{y}")
 
     def detectar_archivo_fuente(self):
@@ -93,49 +93,70 @@ class LanzadorCEMEXApp:
         return ['D836', 'D838', 'DW66', 'D285', 'D847', 'D865', 'D881', 'DW74', 'DW75', 'DW88']
 
     def construir_interfaz(self):
-        # 1. HEADER HERO
-        header_frame = tk.Frame(self.root, bg=CLR_NAVY, padx=16, pady=12)
+        # 1. HEADER HERO (ARRIBA)
+        header_frame = tk.Frame(self.root, bg=CLR_NAVY, padx=14, pady=8)
         header_frame.pack(fill="x", side="top")
         
-        lbl_brand = tk.Label(header_frame, text="CEMEX AGREGADOS", font=("Segoe UI", 9, "bold"), fg="#93C5FD", bg=CLR_NAVY)
+        lbl_brand = tk.Label(header_frame, text="CEMEX AGREGADOS", font=("Segoe UI", 8, "bold"), fg="#93C5FD", bg=CLR_NAVY)
         lbl_brand.pack(anchor="w")
         
         lbl_title = tk.Label(header_frame, text="Sistema Integral de Matriz y Gobernanza", font=FONT_TITLE, fg=CLR_WHITE, bg=CLR_NAVY)
         lbl_title.pack(anchor="w")
         
-        lbl_sub = tk.Label(header_frame, text="Cálculo automático de MOP %, Desglose de Flete y Dashboard", font=FONT_SUB, fg="#CBD5E1", bg=CLR_NAVY)
-        lbl_sub.pack(anchor="w", pady=(2, 0))
+        lbl_sub = tk.Label(header_frame, text="Cálculo automático de MOP %, Desglose de Flete y Dashboard Ejecutivo", font=FONT_SUB, fg="#CBD5E1", bg=CLR_NAVY)
+        lbl_sub.pack(anchor="w", pady=(1, 0))
 
-        # 2. CONTENEDOR PRINCIPAL
-        main_frame = tk.Frame(self.root, bg=CLR_BG, padx=16, pady=10)
+        # 2. FOOTER FIJO (SIEMPRE VISIBLE ABAJO)
+        footer_frame = tk.Frame(self.root, bg=CLR_BG, padx=14, pady=8)
+        footer_frame.pack(fill="x", side="bottom")
+
+        self.progress_bar = ttk.Progressbar(footer_frame, mode="indeterminate")
+        self.lbl_status = tk.Label(footer_frame, text="", font=FONT_SUB, fg=CLR_BLUE_LIGHT, bg=CLR_BG)
+
+        self.btn_generar = tk.Button(
+            footer_frame,
+            text="🚀  GENERAR MATRIZ Y DASHBOARD (EXCEL)",
+            font=FONT_BTN,
+            bg=CLR_GREEN,
+            fg=CLR_WHITE,
+            activebackground=CLR_GREEN_HOVER,
+            activeforeground=CLR_WHITE,
+            relief="flat",
+            pady=8,
+            cursor="hand2",
+            command=self.iniciar_generacion
+        )
+        self.btn_generar.pack(fill="x")
+
+        # 3. CONTENEDOR PRINCIPAL (CENTRO CON AUTO-AJUSTE)
+        main_frame = tk.Frame(self.root, bg=CLR_BG, padx=14, pady=6)
         main_frame.pack(fill="both", expand=True)
 
-        # 3. BUSCADOR
-        lbl_busc = tk.Label(main_frame, text="🔍 Buscar y filtrar centros (CEDIS):", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG)
-        lbl_busc.pack(anchor="w", pady=(0, 4))
+        # 4. BUSCADOR Y ACCIONES RÁPIDAS
+        lbl_busc = tk.Label(main_frame, text="🔍 Buscar y seleccionar centros (CEDIS):", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG)
+        lbl_busc.pack(anchor="w", pady=(0, 2))
         
-        self.txt_search = ttk.Entry(main_frame, font=FONT_BODY)
-        self.txt_search.pack(fill="x", pady=(0, 8))
+        search_box = tk.Frame(main_frame, bg=CLR_BG)
+        search_box.pack(fill="x", pady=(0, 4))
+        
+        self.txt_search = ttk.Entry(search_box, font=FONT_BODY)
+        self.txt_search.pack(side="left", fill="x", expand=True, padx=(0, 6))
         self.txt_search.bind("<KeyRelease>", self.filtrar_lista)
 
-        # 4. ACCIONES RÁPIDAS
-        btn_box = tk.Frame(main_frame, bg=CLR_BG)
-        btn_box.pack(fill="x", pady=(0, 6))
+        btn_all = tk.Button(search_box, text="☑ Todos", font=FONT_SUB, bg=CLR_WHITE, fg=CLR_TEXT, relief="groove", command=self.marcar_todos, padx=6, pady=1, cursor="hand2")
+        btn_all.pack(side="left", padx=2)
         
-        btn_all = tk.Button(btn_box, text="☑ Marcar Todos", font=FONT_SUB, bg=CLR_WHITE, fg=CLR_TEXT, relief="groove", command=self.marcar_todos, padx=6, pady=2, cursor="hand2")
-        btn_all.pack(side="left", padx=(0, 4))
+        btn_none = tk.Button(search_box, text="☐ Ninguno", font=FONT_SUB, bg=CLR_WHITE, fg=CLR_TEXT, relief="groove", command=self.desmarcar_todos, padx=6, pady=1, cursor="hand2")
+        btn_none.pack(side="left", padx=2)
         
-        btn_none = tk.Button(btn_box, text="☐ Desmarcar", font=FONT_SUB, bg=CLR_WHITE, fg=CLR_TEXT, relief="groove", command=self.desmarcar_todos, padx=6, pady=2, cursor="hand2")
-        btn_none.pack(side="left", padx=4)
-        
-        btn_demo = tk.Button(btn_box, text="🎯 Demo D836 / D838", font=FONT_SUB, bg=CLR_WHITE, fg=CLR_BLUE_LIGHT, relief="groove", command=self.marcar_demo, padx=6, pady=2, cursor="hand2")
-        btn_demo.pack(side="left", padx=4)
+        btn_demo = tk.Button(search_box, text="🎯 Demo", font=FONT_SUB, bg=CLR_WHITE, fg=CLR_BLUE_LIGHT, relief="groove", command=self.marcar_demo, padx=6, pady=1, cursor="hand2")
+        btn_demo.pack(side="left", padx=2)
 
         # 5. LISTA SCROLLABLE DE CHECKBOXES
         list_card = tk.Frame(main_frame, bg=CLR_WHITE, bd=1, relief="solid", highlightthickness=0)
-        list_card.pack(fill="both", expand=True, pady=(2, 8))
+        list_card.pack(fill="both", expand=True, pady=(2, 4))
         
-        self.canvas = tk.Canvas(list_card, bg=CLR_WHITE, highlightthickness=0)
+        self.canvas = tk.Canvas(list_card, bg=CLR_WHITE, height=130, highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(list_card, orient="vertical", command=self.canvas.yview)
         self.scrollable_frame = tk.Frame(self.canvas, bg=CLR_WHITE)
 
@@ -150,8 +171,6 @@ class LanzadorCEMEXApp:
 
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
-        
-        # Permitir scroll con la rueda del ratón
         self.canvas.bind_all("<MouseWheel>", self.on_mousewheel)
 
         self.dibujar_checkboxes(self.all_cedis)
@@ -160,15 +179,15 @@ class LanzadorCEMEXApp:
         self.lbl_count = tk.Label(main_frame, text="", font=FONT_SUB, fg=CLR_MUTED, bg=CLR_BG)
         self.lbl_count.pack(anchor="w", pady=(0, 4))
 
-        # 7. FILTRO DE CONTRATOS DE COMPRA (TRAOPE)
-        frame_opc = tk.LabelFrame(main_frame, text="  Vigencia Contratos Compra (TRAOPE):  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=10, pady=4, relief="groove")
-        frame_opc.pack(fill="x", pady=(0, 6))
+        # 7. FILTRO DE CONTRATOS DE COMPRA (TRAOPE) EN FORMATO COMPACTO HORIZONTAL
+        frame_opc = tk.LabelFrame(main_frame, text="  Vigencia Contratos Compra (TRAOPE):  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=8, pady=2, relief="groove")
+        frame_opc.pack(fill="x", pady=(0, 4))
         
         self.filtro_traope_var = tk.StringVar(value="2024")
         
         rb_2024 = tk.Radiobutton(
             frame_opc,
-            text="Contratos (Vigencia >= 2024)  [Recomendado]",
+            text="Vigencia >= 2024 [Recomendado]",
             variable=self.filtro_traope_var,
             value="2024",
             font=FONT_BODY,
@@ -178,11 +197,11 @@ class LanzadorCEMEXApp:
             selectcolor=CLR_WHITE,
             cursor="hand2"
         )
-        rb_2024.pack(anchor="w", pady=1)
+        rb_2024.pack(side="left", padx=(0, 16), pady=1)
         
         rb_2029 = tk.Radiobutton(
             frame_opc,
-            text="Contratos (Vigencia >= 2029)  [Modo Estricto]",
+            text="Vigencia >= 2029 [Modo Estricto]",
             variable=self.filtro_traope_var,
             value="2029",
             font=FONT_BODY,
@@ -192,17 +211,20 @@ class LanzadorCEMEXApp:
             selectcolor=CLR_WHITE,
             cursor="hand2"
         )
-        rb_2029.pack(anchor="w", pady=1)
+        rb_2029.pack(side="left", padx=0, pady=1)
 
-        # 8. ORGANIZACIÓN DE HOJAS / PESTAÑAS EN EXCEL
-        frame_fmt = tk.LabelFrame(main_frame, text="  Organización de Pestañas en Excel:  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=10, pady=4, relief="groove")
-        frame_fmt.pack(fill="x", pady=(0, 8))
+        # 8. ORGANIZACIÓN DE HOJAS / PESTAÑAS EN EXCEL (CUADRÍCULA 2x2 COMPACTA)
+        frame_fmt = tk.LabelFrame(main_frame, text="  Organización de Pestañas en Excel:  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=8, pady=2, relief="groove")
+        frame_fmt.pack(fill="x", pady=(0, 2))
         
         self.formato_hojas_var = tk.StringVar(value="por_cedis")
         
+        grid_fmt = tk.Frame(frame_fmt, bg=CLR_BG)
+        grid_fmt.pack(fill="x", expand=True)
+
         rb_fmt1 = tk.Radiobutton(
-            frame_fmt,
-            text="📑 Pestaña por cada CEDIS  [Recomendado]",
+            grid_fmt,
+            text="📑 Pestaña x CEDIS [Recomendado]",
             variable=self.formato_hojas_var,
             value="por_cedis",
             font=FONT_BODY,
@@ -212,11 +234,11 @@ class LanzadorCEMEXApp:
             selectcolor=CLR_WHITE,
             cursor="hand2"
         )
-        rb_fmt1.pack(anchor="w", pady=1)
+        rb_fmt1.grid(row=0, column=0, sticky="w", padx=(0, 10), pady=1)
         
         rb_fmt2 = tk.Radiobutton(
-            frame_fmt,
-            text="📊 En una sola hoja (Consolidado Global)",
+            grid_fmt,
+            text="📊 1 Sola Hoja Consolidada",
             variable=self.formato_hojas_var,
             value="consolidado",
             font=FONT_BODY,
@@ -226,11 +248,11 @@ class LanzadorCEMEXApp:
             selectcolor=CLR_WHITE,
             cursor="hand2"
         )
-        rb_fmt2.pack(anchor="w", pady=1)
+        rb_fmt2.grid(row=0, column=1, sticky="w", pady=1)
 
         rb_fmt3 = tk.Radiobutton(
-            frame_fmt,
-            text="🏢 Pestaña por Sociedad (7100 Filiales / 7180-7277 Trading)",
+            grid_fmt,
+            text="🏢 Pestaña x Sociedad (7100 / 7180)",
             variable=self.formato_hojas_var,
             value="por_sociedad",
             font=FONT_BODY,
@@ -240,11 +262,11 @@ class LanzadorCEMEXApp:
             selectcolor=CLR_WHITE,
             cursor="hand2"
         )
-        rb_fmt3.pack(anchor="w", pady=1)
+        rb_fmt3.grid(row=1, column=0, sticky="w", padx=(0, 10), pady=1)
 
         rb_fmt4 = tk.Radiobutton(
-            frame_fmt,
-            text="🌟 Híbrido (Consolidado Global + Pestañas por CEDIS)",
+            grid_fmt,
+            text="🌟 Híbrido (Global + x CEDIS)",
             variable=self.formato_hojas_var,
             value="hibrido",
             font=FONT_BODY,
@@ -254,27 +276,7 @@ class LanzadorCEMEXApp:
             selectcolor=CLR_WHITE,
             cursor="hand2"
         )
-        rb_fmt4.pack(anchor="w", pady=1)
-
-        # 9. BARRA DE PROGRESO Y ESTATUS
-        self.progress_bar = ttk.Progressbar(main_frame, mode="indeterminate")
-        self.lbl_status = tk.Label(main_frame, text="", font=FONT_SUB, fg=CLR_BLUE_LIGHT, bg=CLR_BG)
-
-        # 10. BOTÓN PRINCIPAL DE GENERACIÓN
-        self.btn_generar = tk.Button(
-            main_frame,
-            text="🚀  GENERAR MATRIZ Y DASHBOARD (EXCEL)",
-            font=FONT_BTN,
-            bg=CLR_GREEN,
-            fg=CLR_WHITE,
-            activebackground=CLR_GREEN_HOVER,
-            activeforeground=CLR_WHITE,
-            relief="flat",
-            pady=10,
-            cursor="hand2",
-            command=self.iniciar_generacion
-        )
-        self.btn_generar.pack(fill="x", side="bottom")
+        rb_fmt4.grid(row=1, column=1, sticky="w", pady=1)
 
     def ajustar_ancho_canvas(self, event):
         self.canvas.itemconfig(self.canvas_window, width=event.width)
