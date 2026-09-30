@@ -137,17 +137,9 @@ if %errorlevel% neq 0 (
     echo [OK] Componentes listos.
 )
 
-:: 4. Crear Acceso Directo automatico en el Escritorio
-set "SCRIPT_DIR=%~dp0"
-set "SHORTCUT_PATH=%USERPROFILE%\Desktop\CEMEX - Matriz de Precios.lnk"
-set "TARGET_SCRIPT=%SCRIPT_DIR%Lanzador_CEMEX.pyw"
-
-powershell -NoProfile -Command "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('%SHORTCUT_PATH%'); $s.TargetPath = '%TARGET_SCRIPT%'; $s.WorkingDirectory = '%SCRIPT_DIR%'; $s.Description = 'CEMEX Agregados - Matriz de Precios y Costos'; $s.Save()" >nul 2>&1
-
-if exist "%SHORTCUT_PATH%" (
-    echo [OK] Acceso directo disponible en tu Escritorio: "CEMEX - Matriz de Precios"
-)
-
+:: 4. Crear acceso propio para el escritorio de este usuario
+set "TARGET_SCRIPT=%~dp0Lanzador_CEMEX.pyw"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0assets\crear_acceso.ps1"
 :: 5. Iniciar la aplicacion de inmediato
 echo.
 echo [*] Iniciando interfaz grafica CEMEX...
