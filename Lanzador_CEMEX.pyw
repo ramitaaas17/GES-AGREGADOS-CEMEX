@@ -2,9 +2,10 @@ import os
 import sys
 import glob
 import time
+import json
 import threading
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import pandas as pd
 import openpyxl
 
@@ -34,14 +35,15 @@ class LanzadorCEMEXApp:
     def __init__(self, root):
         self.root = root
         self.root.title("CEMEX | Sistema Integral de Matriz de Precios y Gobernanza")
-        self.root.geometry("580x640")
-        self.root.minsize(480, 480)
+        self.root.geometry("600x700")
+        self.root.minsize(500, 520)
         self.root.configure(bg=CLR_BG)
         
         # Centrar ventana en pantalla
-        self.centrar_ventana(580, 640)
+        self.centrar_ventana(600, 700)
         
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.cfg_compartida = self.cargar_config_compartida()
         self.source_file = self.detectar_archivo_fuente()
         self.all_cedis = self.cargar_lista_cedis()
         
@@ -66,6 +68,47 @@ class LanzadorCEMEXApp:
         x = max(0, (sw - ancho) // 2)
         y = max(0, (sh - alto) // 2)
         self.root.geometry(f"{ancho}x{alto}+{x}+{y}")
+
+    def cargar_config_compartida(self):
+        cfg_path = os.path.join(self.base_dir, "config_compartida.json")
+        default_dir = os.path.join(self.base_dir, "_salidas_integradas", "Carpeta_Compartida_Champions")
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                    if "ruta_compartida" in cfg and cfg["ruta_compartida"]:
+                        return cfg
+            except Exception:
+                pass
+        return {"ruta_compartida": default_dir, "organizar_subcarpetas": True}
+
+    def guardar_config_compartida(self, cfg):
+        cfg_path = os.path.join(self.base_dir, "config_compartida.json")
+        try:
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def obtener_ruta_display(self):
+        ruta = self.cfg_compartida.get("ruta_compartida", "")
+        if not ruta:
+            return "No configurada (clic en Cambiar)"
+        if len(ruta) > 55:
+            return "..." + ruta[-52:]
+        return ruta
+
+    def seleccionar_carpeta_compartida(self):
+        dir_actual = self.cfg_compartida.get("ruta_compartida", self.base_dir)
+        nueva_ruta = filedialog.askdirectory(
+            initialdir=dir_actual if os.path.exists(dir_actual) else self.base_dir,
+            title="Seleccionar Carpeta Compartida para Champions (SharePoint / Teams / Red)"
+        )
+        if nueva_ruta:
+            self.cfg_compartida["ruta_compartida"] = os.path.normpath(nueva_ruta)
+            self.guardar_config_compartida(self.cfg_compartida)
+            if hasattr(self, "lbl_ruta_comp"):
+                self.lbl_ruta_comp.config(text=self.obtener_ruta_display())
 
     def detectar_archivo_fuente(self):
         patron = os.path.join(self.base_dir, "*2026*.xlsm")
@@ -107,7 +150,7 @@ class LanzadorCEMEXApp:
         lbl_sub.pack(anchor="w", pady=(1, 0))
 
         # 2. FOOTER FIJO (SIEMPRE VISIBLE ABAJO)
-        footer_frame = tk.Frame(self.root, bg=CLR_BG, padx=14, pady=8)
+        footer_frame = tk.Frame(self.root, bg=CLR_BG, padx=14, pady=6)
         footer_frame.pack(fill="x", side="bottom")
 
         self.progress_bar = ttk.Progressbar(footer_frame, mode="indeterminate")
@@ -115,18 +158,33 @@ class LanzadorCEMEXApp:
 
         self.btn_generar = tk.Button(
             footer_frame,
-            text="🚀  GENERAR MATRIZ Y DASHBOARD (EXCEL)",
+            text="🚀  GENERAR REPORTE LOCAL (EXCEL COMPLETO)",
             font=FONT_BTN,
             bg=CLR_GREEN,
             fg=CLR_WHITE,
             activebackground=CLR_GREEN_HOVER,
             activeforeground=CLR_WHITE,
             relief="flat",
-            pady=8,
+            pady=6,
             cursor="hand2",
             command=self.iniciar_generacion
         )
-        self.btn_generar.pack(fill="x")
+        self.btn_generar.pack(fill="x", pady=(0, 4))
+
+        self.btn_publicar = tk.Button(
+            footer_frame,
+            text="📤  PUBLICAR MATRICES A CHAMPIONS (CARPETA COMPARTIDA)",
+            font=FONT_BTN,
+            bg=CLR_NAVY,
+            fg=CLR_WHITE,
+            activebackground="#001D4A",
+            activeforeground=CLR_WHITE,
+            relief="flat",
+            pady=6,
+            cursor="hand2",
+            command=self.iniciar_publicacion_champions
+        )
+        self.btn_publicar.pack(fill="x")
 
         # 3. CONTENEDOR PRINCIPAL (CENTRO CON AUTO-AJUSTE)
         main_frame = tk.Frame(self.root, bg=CLR_BG, padx=14, pady=6)
@@ -252,7 +310,7 @@ class LanzadorCEMEXApp:
 
         rb_fmt3 = tk.Radiobutton(
             grid_fmt,
-            text="🏢 Pestaña x Sociedad (7100 / 7180)",
+            text="🏢 Pestaña x Sociedad (7100 / 7180-7277 Terceros)",
             variable=self.formato_hojas_var,
             value="por_sociedad",
             font=FONT_BODY,
@@ -277,6 +335,42 @@ class LanzadorCEMEXApp:
             cursor="hand2"
         )
         rb_fmt4.grid(row=1, column=1, sticky="w", pady=1)
+
+        # 9. ENTREGABLES A GENERAR (MASTER, CLIENTE FINAL, POWER BI)
+        frame_ent = tk.LabelFrame(main_frame, text="  Entregables y Reportes a Generar:  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=8, pady=2, relief="groove")
+        frame_ent.pack(fill="x", pady=(2, 2))
+        
+        self.gen_master_var = tk.BooleanVar(value=True)
+        self.gen_cliente_var = tk.BooleanVar(value=True)
+        self.gen_pbi_var = tk.BooleanVar(value=True)
+        
+        cb_master = tk.Checkbutton(
+            frame_ent, text="📘 Versión Master (Interna)", variable=self.gen_master_var,
+            font=FONT_BODY, bg=CLR_BG, fg=CLR_TEXT, selectcolor=CLR_WHITE, cursor="hand2"
+        )
+        cb_master.pack(side="left", padx=(0, 6), pady=1)
+        
+        cb_cli = tk.Checkbutton(
+            frame_ent, text="📗 Versión Cliente Final", variable=self.gen_cliente_var,
+            font=FONT_BODY, bg=CLR_BG, fg=CLR_TEXT, selectcolor=CLR_WHITE, cursor="hand2"
+        )
+        cb_cli.pack(side="left", padx=6, pady=1)
+        
+        cb_pbi = tk.Checkbutton(
+            frame_ent, text="📊 Power BI", variable=self.gen_pbi_var,
+            font=FONT_BODY, bg=CLR_BG, fg=CLR_TEXT, selectcolor=CLR_WHITE, cursor="hand2"
+        )
+        cb_pbi.pack(side="left", padx=6, pady=1)
+
+        # 10. CARPETA COMPARTIDA PARA CHAMPIONS (SHAREPOINT / TEAMS / RED)
+        frame_comp = tk.LabelFrame(main_frame, text="  📁 Carpeta Compartida Champions (SharePoint / Teams):  ", font=FONT_BOLD, fg=CLR_TEXT, bg=CLR_BG, padx=8, pady=3, relief="groove")
+        frame_comp.pack(fill="x", pady=(2, 2))
+        
+        self.lbl_ruta_comp = tk.Label(frame_comp, text=self.obtener_ruta_display(), font=FONT_SUB, fg=CLR_MUTED, bg=CLR_BG, anchor="w")
+        self.lbl_ruta_comp.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        
+        btn_sel_comp = tk.Button(frame_comp, text="📂 Cambiar", font=FONT_SUB, bg=CLR_WHITE, fg=CLR_TEXT, relief="groove", command=self.seleccionar_carpeta_compartida, padx=6, pady=1, cursor="hand2")
+        btn_sel_comp.pack(side="right")
 
     def ajustar_ancho_canvas(self, event):
         self.canvas.itemconfig(self.canvas_window, width=event.width)
@@ -365,6 +459,7 @@ class LanzadorCEMEXApp:
         # Bloquear UI y mostrar barra de progreso
         self.is_processing = True
         self.btn_generar.config(state="disabled", text="⏳  PROCESANDO DATOS...", bg=CLR_MUTED)
+        self.btn_publicar.config(state="disabled")
         self.progress_bar.pack(fill="x", pady=(0, 4), before=self.btn_generar)
         self.progress_bar.start(10)
         self.lbl_status.pack(pady=(0, 4), before=self.btn_generar)
@@ -380,6 +475,9 @@ class LanzadorCEMEXApp:
         
         filtro_sel = self.filtro_traope_var.get()
         fmt_sel = self.formato_hojas_var.get()
+        g_master = self.gen_master_var.get()
+        g_cli = self.gen_cliente_var.get()
+        g_pbi = self.gen_pbi_var.get()
         
         try:
             # 1. Cargar datos maestros (usa caché rápido)
@@ -390,10 +488,11 @@ class LanzadorCEMEXApp:
                 data_raw, cedis=arg_cedis, modo_a=True, filtro_traope=filtro_sel
             )
             
-            # 3. Construir libro final con Dashboard y Matriz según formato de hojas
+            # 3. Construir libro final Master, Cliente Final y Power BI
             archivo_generado = matriz_integrada.escribir_excel(
                 df_matriz, arg_cedis, out_dir, [df_mp, df_flete, df_traope, df_contratos],
-                filtro_traope=filtro_sel, formato_hojas=fmt_sel
+                filtro_traope=filtro_sel, formato_hojas=fmt_sel,
+                generar_master=g_master, generar_cliente=g_cli, exportar_powerbi=g_pbi
             )
             
             # Notificar éxito a la UI principal
@@ -401,6 +500,100 @@ class LanzadorCEMEXApp:
             
         except Exception as e:
             self.root.after(0, self.finalizar_error, str(e))
+
+    def iniciar_publicacion_champions(self):
+        if self.is_processing:
+            return
+
+        seleccionados = [c for c, var in self.cedis_vars.items() if var.get()]
+        if not seleccionados:
+            messagebox.showwarning(
+                "Selección Requerida",
+                "Por favor seleccione al menos un CEDIS de la lista para publicar a los Champions, o presione '☑ Todos'."
+            )
+            return
+
+        ruta_comp = self.cfg_compartida.get("ruta_compartida", "")
+        if not ruta_comp:
+            messagebox.showinfo(
+                "Configurar Carpeta Compartida",
+                "Por favor seleccione la carpeta compartida (SharePoint, Teams o Red) donde se publicarán los archivos para los Champions."
+            )
+            self.seleccionar_carpeta_compartida()
+            ruta_comp = self.cfg_compartida.get("ruta_compartida", "")
+            if not ruta_comp:
+                return
+
+        # Si no existe la carpeta, crearla o verificar acceso
+        try:
+            os.makedirs(ruta_comp, exist_ok=True)
+        except Exception as e:
+            messagebox.showerror("Error de Acceso", f"No se pudo acceder o crear la carpeta compartida:\n{ruta_comp}\n\nDetalle: {e}")
+            return
+
+        if len(seleccionados) == len(self.all_cedis):
+            arg_cedis = None
+            txt_cedis = f"TODOS LOS CEDIS ({len(self.all_cedis)} centros)"
+        else:
+            arg_cedis = seleccionados
+            txt_cedis = f"{len(seleccionados)} CEDIS seleccionados"
+
+        confirm = messagebox.askyesno(
+            "Confirmar Publicación a Champions",
+            f"Se generarán matrices individuales en versión 'Cliente Final' (con costos TRAOPE y márgenes protegidos) para:\n\n"
+            f"• Centros: {txt_cedis}\n"
+            f"• Destino: {ruta_comp}\n\n"
+            f"¿Desea iniciar la publicación ahora?"
+        )
+        if not confirm:
+            return
+
+        # Bloquear UI y mostrar barra de progreso
+        self.is_processing = True
+        self.btn_generar.config(state="disabled")
+        self.btn_publicar.config(state="disabled", text="⏳  PUBLICANDO A CHAMPIONS...", bg=CLR_MUTED)
+        self.progress_bar.pack(fill="x", pady=(0, 4), before=self.btn_generar)
+        self.progress_bar.start(10)
+        self.lbl_status.pack(pady=(0, 4), before=self.btn_generar)
+        self.lbl_status.config(text=f"Publicando {txt_cedis} en carpeta compartida...")
+
+        hilo = threading.Thread(target=self.ejecutar_publicacion, args=(arg_cedis, ruta_comp), daemon=True)
+        hilo.start()
+
+    def ejecutar_publicacion(self, arg_cedis, ruta_comp):
+        filtro_sel = self.filtro_traope_var.get()
+        try:
+            data_raw = matriz_integrada.cargar_excel(self.source_file, force_refresh=False)
+            df_matriz, _, _, _, _ = matriz_integrada.procesar_datos(
+                data_raw, cedis=arg_cedis, modo_a=True, filtro_traope=filtro_sel
+            )
+            res = matriz_integrada.publicar_matrices_champions(
+                df_matriz, ruta_comp, cedis_list=arg_cedis, subcarpetas=True
+            )
+            self.root.after(0, self.finalizar_publicacion_exito, res)
+        except Exception as e:
+            self.root.after(0, self.finalizar_error, str(e))
+
+    def finalizar_publicacion_exito(self, res):
+        self.progreso_terminado()
+        ruta = res['ruta']
+        total_c = res['total_cedis']
+        total_r = res['total_rutas']
+        
+        abrir = messagebox.askyesno(
+            "¡Publicación Completada con Éxito!",
+            f"Se han publicado las matrices para los Champions en la carpeta compartida.\n\n"
+            f"• Centros actualizados: {total_c} CEDIS\n"
+            f"• Total de rutas distribuidas: {total_r}\n"
+            f"• Formato: Cliente Final (Costos TRAOPE y márgenes internos protegidos)\n"
+            f"• Ubicación: {ruta}\n\n"
+            f"¿Desea abrir la carpeta compartida ahora?"
+        )
+        if abrir:
+            try:
+                os.startfile(ruta)
+            except Exception:
+                pass
 
     def finalizar_exito(self, archivo_generado):
         self.progreso_terminado()
@@ -439,8 +632,13 @@ class LanzadorCEMEXApp:
         self.lbl_status.pack_forget()
         self.btn_generar.config(
             state="normal",
-            text="🚀  GENERAR MATRIZ Y DASHBOARD (EXCEL)",
+            text="🚀  GENERAR REPORTE LOCAL (EXCEL COMPLETO)",
             bg=CLR_GREEN
+        )
+        self.btn_publicar.config(
+            state="normal",
+            text="📤  PUBLICAR MATRICES A CHAMPIONS (CARPETA COMPARTIDA)",
+            bg=CLR_NAVY
         )
 
 # =============================================================================

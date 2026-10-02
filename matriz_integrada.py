@@ -573,10 +573,12 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
         # Precios de referencia base por Material para Canteras Propias (promedio ponderado/media)
         precios_ref_mat = df_mp.groupby('Material')['Importe'].mean().to_dict()
         
-        # Catálogos Maestros Globales de Snowflake para Nombres de SF y Descripción de Centros
+        # Catálogos Maestros Globales de Snowflake para Nombres de SF, Descripción de Centros y Nombres de Destino
         col_sf_traope = 'Ship From' if 'Ship From' in df_traope.columns else 'Shipfrom'
         col_nom_sf = 'Nombre SF' if 'Nombre SF' in df_traope.columns else None
         col_desc_centro = 'Descripción Centro' if 'Descripción Centro' in df_traope.columns else 'Desc. Centro'
+        col_dest_traope = 'Destino' if 'Destino' in df_traope.columns else None
+        col_nom_dest = 'Nombre Destino' if 'Nombre Destino' in df_traope.columns else None
         
         map_shipfrom_nombre = {}
         if col_nom_sf and col_nom_sf in df_traope.columns:
@@ -593,6 +595,15 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
                 df_traope.dropna(subset=['Centro', col_desc_centro])
                 .drop_duplicates('Centro')
                 .set_index('Centro')[col_desc_centro]
+                .to_dict()
+            )
+
+        map_destino_nombre = {}
+        if col_dest_traope and col_nom_dest and col_nom_dest in df_traope.columns:
+            map_destino_nombre = (
+                df_traope.dropna(subset=[col_dest_traope, col_nom_dest])
+                .drop_duplicates(col_dest_traope)
+                .set_index(col_dest_traope)[col_nom_dest]
                 .to_dict()
             )
 
@@ -655,6 +666,7 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
             mat = row['Material']
             sf_str = str(row.get('Shipfrom', '')).strip()
             centro_str = str(row.get('Centro', '')).strip()
+            dest_str = str(row.get('Destinatario', '')).strip()
             
             # 1. Flete (match exacto)
             f_row = flete_c1.loc[c1] if c1 in flete_c1.index else None
@@ -676,7 +688,7 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
             elif c2 in traope_c2.index:
                 t_row = traope_c2.loc[c2]
                 
-            # Condición de Expedición con Búsqueda en Cascada Multifuente
+            # Condición de Expedición con Búsqueda en Cascada Multifuente (Basada en VK13)
             cond_exp = ''
             if f_row is not None and col_f_exp and col_f_exp in f_row.index and pd.notna(f_row[col_f_exp]):
                 cond_exp = str(f_row[col_f_exp]).strip()
@@ -709,16 +721,31 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
                 desc_centro = str(t_row['Descripción Centro']).strip()
             if not desc_centro:
                 desc_centro = map_centro_desc.get(centro_str, '')
+
+            # Nombre Destino (Integración desde TRAOPE)
+            nombre_destino = ''
+            if t_row is not None and 'Nombre Destino' in t_row.index and pd.notna(t_row['Nombre Destino']):
+                nombre_destino = str(t_row['Nombre Destino']).strip()
+            if not nombre_destino:
+                nombre_destino = map_destino_nombre.get(dest_str, '')
                 
             imp_mp = row['Importe']
             imp_flete = f_row['Importe'] if f_row is not None else None
             um_venta = row.get('Unidad', '')
+            
+            # Asignación Automática de Modalidad (Basada en VK13):
+            # Si no hay flete cargado o Cond. Exp == 1 -> 'Recogido'. Si hay flete -> 'Entregado'.
+            if str(cond_exp).strip() == '1' or imp_flete is None or imp_flete == 0:
+                modalidad_venta = 'Recogido'
+            else:
+                modalidad_venta = 'Entregado'
             
             imp_costo_total = None
             imp_flete_compra = None
             mp_compra = None
             um_costo = None
             contrato_compra = ''
+            inicio_vigencia_compra = ''
             fin_vigencia_compra = ''
             
             if t_row is not None:
@@ -728,6 +755,12 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
                     pos_str = str(t_row.get('Pos', '')).strip()
                     contrato_compra = f"{str(t_row['Doc. Compras']).strip()}-{pos_str}" if pos_str else str(t_row['Doc. Compras']).strip()
                     
+                # Inicio y Fin de Vigencia de Contrato de Compra (TRAOPE)
+                if 'Válido de' in t_row.index and pd.notna(t_row['Válido de']):
+                    inicio_vigencia_compra = str(t_row['Válido de']).strip().split('.')[0]
+                elif 'In.período validez' in t_row.index and pd.notna(t_row['In.período validez']):
+                    inicio_vigencia_compra = str(t_row['In.período validez']).strip().split('.')[0]
+
                 if 'Validez a' in t_row.index and pd.notna(t_row['Validez a']):
                     fin_vigencia_compra = str(t_row['Validez a']).strip().split('.')[0]
                 elif 'Fin período validez' in t_row.index and pd.notna(t_row['Fin período validez']):
@@ -753,18 +786,17 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
                         mp_compra = imp_costo_total
                         
             # Clasificación Oficial Tipo de Operación:
-            # - 7100 = CANTERAS PROPIAS (100% de los casos)
-            # - 7180 y 7277 = TRADING (Terceros)
-            # - Otras sociedades: si tiene costo o prefijo TP/TC es TRADING, si no CANTERAS PROPIAS
+            # - 7100 = CANTERAS PROPIAS (Filiales Concretos)
+            # - 7180 y 7277 = TERCEROS (Agregados y Trading Comercial)
             sociedad_str = str(row.get('Org. Ventas', '')).strip()
             nombre_sf_upper = str(t_row['Nombre SF'] if t_row is not None and 'Nombre SF' in t_row.index else '').upper()
             
             if sociedad_str == '7100':
                 tipo_operacion = 'CANTERAS PROPIAS'
             elif sociedad_str in ('7180', '7277'):
-                tipo_operacion = 'TRADING'
+                tipo_operacion = 'TERCEROS'
             elif (imp_costo_total is not None and imp_costo_total > 0) or 'TP-' in nombre_sf_upper or 'SF TP' in nombre_sf_upper or 'TC-' in nombre_sf_upper:
-                tipo_operacion = 'TRADING'
+                tipo_operacion = 'TERCEROS'
             else:
                 tipo_operacion = 'CANTERAS PROPIAS'
                 
@@ -782,8 +814,9 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
             val1 = calc_validacion1(um_venta, um_costo, cond_exp, imp_mp, imp_flete, pv_val)
             val2 = calc_validacion2(imp_costo_total, val1, sociedad_str)
             
-            # Armado de fila con precio junto a cada condición
+            # Armado de fila con distribución oficial estandarizada
             fila_dict = {
+                # DATOS DE RUTA Y MATERIAL (Cols A a K)
                 'Concat1': c1,
                 'Concat2': c2,
                 'Sociedad': row.get('Org. Ventas', ''),
@@ -791,41 +824,39 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
                 'Nombre SF': nombre_sf,
                 'Centro': row.get('Centro', ''),
                 'Desc. Centro': desc_centro,
-                'Destino': row.get('Destinatario', ''),
+                'Destino': dest_str,
+                'Nombre Destino': nombre_destino,
                 'Material': mat,
                 'Denominación': pv_desc,
+                
+                # DATOS DE VENTA (VK13) (Cols L a S)
                 'PV': pv_val,
                 'Inicio Vigencia': row.get('Inicio Validez', ''),
                 'Fin Vigencia': row.get('Valido a', ''),
-                
-                # VENTA: Precio junto a condición
+                'Modalidad Venta': modalidad_venta,
                 'Clase Cond. MP': row.get('Clase Cond.', ''),
                 'Importe MP': imp_mp,
                 'UM Venta': um_venta,
-                'Clase Cond. Flete': f_row['Clase Cond.'] if f_row is not None else '',
                 'Importe Flete': imp_flete,
-                'Cond. Expedición': cond_exp,
                 
-                # COSTO: Desglosado Total, Flete Compra y Costo Material Puro
+                # DATOS DE COMPRA (TRAOPE) (Cols T a Y)
                 'No. Contrato Compra': contrato_compra,
+                'Inicio Vigencia Compra': inicio_vigencia_compra,
                 'Fin Vigencia Compra': fin_vigencia_compra,
                 'Costo Total TRAOPE': imp_costo_total,
                 'Flete Compra': imp_flete_compra,
                 'MP Compra (Costo Material)': mp_compra,
-                'UM Costo': um_costo,
+                
+                # MARGEN (Col Z)
                 'Margen Material (MOP %)': mop,
                 
-                # GOBERNANZA Y AUTORIZACIÓN
+                # AUDITORÍA, GOBERNANZA Y CONTRATOS (Cols AA a AI)
+                'UM Costo': um_costo,
                 'Tipo Operación': tipo_operacion,
-                'Precio Referencia': precio_ref,
                 'Nivel Autorización / Alerta': nivel_aut,
-                
-                # VALIDACIÓN MARGEN INTEGRAL
                 'Validacion 1': val1,
                 'Validacion 2': val2,
                 'Semaforo': '',
-                
-                # CONTRATO VENTA
                 'No. Contrato Venta': co_row['Llave'] if co_row is not None and 'Llave' in co_row.index else '',
                 'UM Contrato': co_row['UM'] if co_row is not None and 'UM' in co_row.index else '',
                 'Precio Contrato': pd.to_numeric(co_row['Precio Neto'], errors='coerce') if co_row is not None and 'Precio Neto' in co_row.index else None
@@ -937,26 +968,26 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_tr
     
     # --- 3. MÉTRICAS CLAVE ---
     totales = len(df_matriz)
-    df_trading = df_matriz[df_matriz['Sociedad'].astype(str).str.strip() != '7100']
-    tot_trading = len(df_trading)
-    tot_filial = totales - tot_trading
+    df_terceros = df_matriz[df_matriz['Sociedad'].astype(str).str.strip() != '7100']
+    tot_terceros = len(df_terceros)
+    tot_filial = totales - tot_terceros
     
-    mop_validos = df_trading['Margen Material (MOP %)'].dropna() if not df_trading.empty else df_matriz['Margen Material (MOP %)'].dropna()
+    mop_validos = df_terceros['Margen Material (MOP %)'].dropna() if not df_terceros.empty else df_matriz['Margen Material (MOP %)'].dropna()
     mop_prom = mop_validos.mean() if not mop_validos.empty else 0
     
-    auth_champion = len(df_trading[df_trading['Nivel Autorización / Alerta'].str.contains('Champion', na=False)])
-    auth_regional = len(df_trading[df_trading['Nivel Autorización / Alerta'].str.contains('Regional', na=False)])
-    auth_nacional = len(df_trading[df_trading['Nivel Autorización / Alerta'].str.contains('Nacional|Alerta', na=False)])
+    auth_champion = len(df_terceros[df_terceros['Nivel Autorización / Alerta'].str.contains('Champion', na=False)])
+    auth_regional = len(df_terceros[df_terceros['Nivel Autorización / Alerta'].str.contains('Regional', na=False)])
+    auth_nacional = len(df_terceros[df_terceros['Nivel Autorización / Alerta'].str.contains('Nacional|Alerta', na=False)])
     
-    pct_champ = (auth_champion / tot_trading * 100) if tot_trading > 0 else 0
-    pct_reg = (auth_regional / tot_trading * 100) if tot_trading > 0 else 0
-    pct_nac = (auth_nacional / tot_trading * 100) if tot_trading > 0 else 0
+    pct_champ = (auth_champion / tot_terceros * 100) if tot_terceros > 0 else 0
+    pct_reg = (auth_regional / tot_terceros * 100) if tot_terceros > 0 else 0
+    pct_nac = (auth_nacional / tot_terceros * 100) if tot_terceros > 0 else 0
     
-    # 4 TARJETAS KPI MODERNAS
-    dibujar_tarjeta_kpi(ws_dash, 2, 4, "TOTAL RUTAS ANALIZADAS", f"{totales:,}", f"Trading: {tot_trading:,} | Filial: {tot_filial:,}", FILL_NAVY)
-    dibujar_tarjeta_kpi(ws_dash, 5, 7, "MARGEN MATERIAL (TRADING)", f"{mop_prom*100:.1f}%", "Ponderado sobre material puro", FILL_GREEN, Font(color=CLR_DARK_GREEN, bold=True, size=16))
-    dibujar_tarjeta_kpi(ws_dash, 8, 10, "AUTORIZACIÓN CHAMPION", f"{auth_champion} ({pct_champ:.1f}%)", "Margen > 8% (Trading)", FILL_BLUE_ACC, Font(color=CLR_BLUE_ACCENT, bold=True, size=16))
-    dibujar_tarjeta_kpi(ws_dash, 11, 13, "ALERTAS NIVEL NACIONAL", f"{auth_nacional} ({pct_nac:.1f}%)", "Margen < 5% (Trading)", FILL_RED, Font(color=CLR_DARK_RED, bold=True, size=16))
+    # 4 TARJETAS KPI MODERNAS (Nomenclatura Oficial Terceros)
+    dibujar_tarjeta_kpi(ws_dash, 2, 4, "TOTAL RUTAS ANALIZADAS", f"{totales:,}", f"Terceros: {tot_terceros:,} | Filial: {tot_filial:,}", FILL_NAVY)
+    dibujar_tarjeta_kpi(ws_dash, 5, 7, "MARGEN MATERIAL (TERCEROS)", f"{mop_prom*100:.1f}%", "Ponderado sobre material puro", FILL_GREEN, Font(color=CLR_DARK_GREEN, bold=True, size=16))
+    dibujar_tarjeta_kpi(ws_dash, 8, 10, "AUTORIZACIÓN CHAMPION", f"{auth_champion} ({pct_champ:.1f}%)", "Margen > 8% (Terceros)", FILL_BLUE_ACC, Font(color=CLR_BLUE_ACCENT, bold=True, size=16))
+    dibujar_tarjeta_kpi(ws_dash, 11, 13, "ALERTAS NIVEL NACIONAL", f"{auth_nacional} ({pct_nac:.1f}%)", "Margen < 5% (Terceros)", FILL_RED, Font(color=CLR_DARK_RED, bold=True, size=16))
     
     # --- 4. SECCIONES ANALÍTICAS LADO A LADO ---
     
@@ -964,7 +995,7 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_tr
     ws_dash.merge_cells("B10:F10")
     apply_header_style(ws_dash.cell(row=10, column=2), "ESTATUS DE GOBERNANZA Y AUTORIZACIÓN", FILL_NAVY, FONT_WHITE_BOLD)
     
-    headers_gob = [("Nivel Autorización", 2), ("Criterio Objetivo", 3), ("Rutas", 5), ("% Trading", 6)]
+    headers_gob = [("Nivel Autorización", 2), ("Criterio Objetivo", 3), ("Rutas", 5), ("% Terceros", 6)]
     ws_dash.merge_cells("C11:D11")
     for txt, col in headers_gob:
         c = ws_dash.cell(row=11, column=col, value=txt)
@@ -974,9 +1005,9 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_tr
         c.border = THIN_BORDER
         
     filas_gob = [
-        ("Nivel Champion", "Margen > 8% (Trading)", auth_champion, pct_champ, FILL_GREEN, FONT_BLACK_BOLD),
-        ("Nivel Regional", "Margen 5% - 8% (Trading)", auth_regional, pct_reg, FILL_REGIONAL, FONT_NORMAL),
-        ("Alerta Nacional", "Margen < 5% (Trading)", auth_nacional, pct_nac, FILL_RED, FONT_BLACK_BOLD),
+        ("Nivel Champion", "Margen > 8% (Terceros)", auth_champion, pct_champ, FILL_GREEN, FONT_BLACK_BOLD),
+        ("Nivel Regional", "Margen 5% - 8% (Terceros)", auth_regional, pct_reg, FILL_REGIONAL, FONT_NORMAL),
+        ("Alerta Nacional", "Margen < 5% (Terceros)", auth_nacional, pct_nac, FILL_RED, FONT_BLACK_BOLD),
         ("No Aplica (Filial)", "Transferencia 0% (Intercompañía)", tot_filial, (tot_filial/totales*100) if totales>0 else 0, FILL_WHITE, FONT_NORMAL)
     ]
     
@@ -1125,74 +1156,72 @@ def construir_dashboard_ejecutivo(wb, df_matriz, cedis_str, fecha_str, filtro_tr
 # ESCRITURA EN EXCEL FORMATEADO Y ORGANIZACIÓN DE HOJAS
 # =============================================================================
 
-def poblar_hoja_matriz(ws_matriz, df_matriz_sub, sheet_title="Matriz"):
-    """Puebla una hoja de cálculo con el formato corporativo CEMEX (35 columnas, 2 filas de encabezado y estilos)."""
+def poblar_hoja_matriz(ws_matriz, df_matriz_sub, sheet_title="Matriz", es_cliente_final=False):
+    """Puebla una hoja de cálculo con la distribución oficial estandarizada CEMEX (35 columnas, bloques de color y reglas de cliente final)."""
     headers = [
-        ('Concat1', FILL_HEADER, FONT_BLACK_BOLD, 30),
-        ('Concat2', FILL_HEADER, FONT_BLACK_BOLD, 25),
-        ('Sociedad', FILL_HEADER, FONT_BLACK_BOLD, 10),
-        ('Ship From', FILL_HEADER, FONT_BLACK_BOLD, 12),
-        ('Nombre SF', FILL_HEADER, FONT_BLACK_BOLD, 22),
-        ('Centro', FILL_HEADER, FONT_BLACK_BOLD, 10),
-        ('Desc. Centro', FILL_HEADER, FONT_BLACK_BOLD, 20),
-        ('Destino', FILL_HEADER, FONT_BLACK_BOLD, 12),
-        ('Material', FILL_HEADER, FONT_BLACK_BOLD, 12),
-        ('Denominación', FILL_HEADER, FONT_BLACK_BOLD, 30),
-        ('PV', FILL_HEADER, FONT_BLACK_BOLD, 10),
-        ('Inicio Vigencia', FILL_HEADER, FONT_BLACK_BOLD, 14),
-        ('Fin Vigencia', FILL_HEADER, FONT_BLACK_BOLD, 14),
+        # === DATOS DE RUTA Y MATERIAL (Cols A a K: 1 a 11) ===
+        ('Concat1', FILL_HEADER, FONT_BLACK_BOLD, 30),              # A (1)
+        ('Concat2', FILL_HEADER, FONT_BLACK_BOLD, 25),              # B (2)
+        ('Sociedad', FILL_HEADER, FONT_BLACK_BOLD, 10),             # C (3)
+        ('Ship From', FILL_HEADER, FONT_BLACK_BOLD, 12),            # D (4)
+        ('Nombre SF', FILL_HEADER, FONT_BLACK_BOLD, 22),            # E (5)
+        ('Centro', FILL_HEADER, FONT_BLACK_BOLD, 10),               # F (6)
+        ('Desc. Centro', FILL_HEADER, FONT_BLACK_BOLD, 20),         # G (7)
+        ('Destino', FILL_HEADER, FONT_BLACK_BOLD, 12),              # H (8)
+        ('Nombre Destino', FILL_HEADER, FONT_BLACK_BOLD, 24),       # I (9) [NUEVO]
+        ('Material', FILL_HEADER, FONT_BLACK_BOLD, 12),             # J (10)
+        ('Denominación', FILL_HEADER, FONT_BLACK_BOLD, 30),         # K (11)
         
-        # === CONDICIONES DE VENTA (Precio al lado de Condición) ===
-        ('Clase Cond. MP', FILL_VENTA, FONT_BLACK_BOLD, 14),
-        ('Importe MP', FILL_VENTA, FONT_BLACK_BOLD, 14),
-        ('UM Venta', FILL_VENTA, FONT_BLACK_BOLD, 10),
-        ('Clase Cond. Flete', FILL_VENTA, FONT_BLACK_BOLD, 15),
-        ('Importe Flete', FILL_VENTA, FONT_BLACK_BOLD, 14),
-        ('Cond. Expedición', FILL_VENTA, FONT_BLACK_BOLD, 14),
+        # === DATOS DE VENTA (VK13) (Cols L a S: 12 a 19) [FILL_VENTA] ===
+        ('PV', FILL_VENTA, FONT_BLACK_BOLD, 10),                    # L (12)
+        ('Inicio Vigencia', FILL_VENTA, FONT_BLACK_BOLD, 14),       # M (13)
+        ('Fin Vigencia', FILL_VENTA, FONT_BLACK_BOLD, 14),          # N (14)
+        ('Modalidad Venta', FILL_VENTA, FONT_BLACK_BOLD, 16),       # O (15) [NUEVO]
+        ('Clase Cond. MP', FILL_VENTA, FONT_BLACK_BOLD, 14),        # P (16)
+        ('Importe MP', FILL_VENTA, FONT_BLACK_BOLD, 14),            # Q (17)
+        ('UM Venta', FILL_VENTA, FONT_BLACK_BOLD, 10),              # R (18)
+        ('Importe Flete', FILL_VENTA, FONT_BLACK_BOLD, 14),         # S (19)
         
-        # === CONDICIONES DE COMPRA (Desglosado) ===
-        ('No. Contrato Compra', FILL_COSTO, FONT_BLACK_BOLD, 18),
-        ('Fin Vigencia Compra', FILL_COSTO, FONT_BLACK_BOLD, 16),
-        ('Costo Total TRAOPE', FILL_COSTO, FONT_BLACK_BOLD, 16),
-        ('Flete Compra', FILL_COSTO, FONT_BLACK_BOLD, 14),
-        ('MP Compra (Costo Material)', FILL_COSTO, FONT_BLACK_BOLD, 18),
-        ('UM Costo', FILL_COSTO, FONT_BLACK_BOLD, 10),
-        ('Margen Material (MOP %)', FILL_COSTO, FONT_BLACK_BOLD, 18),
+        # === DATOS DE COMPRA (TRAOPE) (Cols T a Y: 20 a 25) [FILL_COSTO] ===
+        ('No. Contrato Compra', FILL_COSTO, FONT_BLACK_BOLD, 18),   # T (20)
+        ('Inicio Vigencia Compra', FILL_COSTO, FONT_BLACK_BOLD, 16),# U (21) [NUEVO]
+        ('Fin Vigencia Compra', FILL_COSTO, FONT_BLACK_BOLD, 16),   # V (22)
+        ('Costo Total TRAOPE', FILL_COSTO, FONT_BLACK_BOLD, 16),    # W (23) [VISIBLE]
+        ('Flete Compra', FILL_COSTO, FONT_BLACK_BOLD, 14),          # X (24)
+        ('MP Compra (Costo Material)', FILL_COSTO, FONT_BLACK_BOLD, 18), # Y (25)
         
-        # === GOBERNANZA Y AUTORIZACIÓN ===
-        ('Tipo Operación', FILL_GOB, FONT_BLACK_BOLD, 16),
-        ('Precio Referencia Base', FILL_GOB, FONT_BLACK_BOLD, 16),
-        ('Nivel Autorización / Alerta', FILL_GOB, FONT_BLACK_BOLD, 36),
+        # === MARGEN MATERIAL (Col Z: 26) [INDEPENDIENTE] ===
+        ('Margen Material (MOP %)', FILL_HEADER, FONT_BLACK_BOLD, 18), # Z (26)
         
-        # === VALIDACIÓN DE MARGEN INTEGRAL ===
-        ('Validación 1', FILL_VAL, FONT_BLACK_BOLD, 14),
-        ('Validación 2', FILL_VAL, FONT_BLACK_BOLD, 14),
-        ('Semáforo', FILL_VAL, FONT_BLACK_BOLD, 16),
-        
-        # === CONTRATO DE VENTA ===
-        ('No. Contrato Venta', FILL_CONTRATO, FONT_BLACK_BOLD, 18),
-        ('UM Contrato', FILL_CONTRATO, FONT_BLACK_BOLD, 12),
-        ('Precio Contrato', FILL_CONTRATO, FONT_BLACK_BOLD, 14)
+        # === AUDITORÍA, GOBERNANZA Y CONTRATOS (Cols AA a AI: 27 a 35) ===
+        ('UM Costo', FILL_GOB, FONT_BLACK_BOLD, 10),                # AA (27)
+        ('Tipo Operación', FILL_GOB, FONT_BLACK_BOLD, 16),          # AB (28)
+        ('Nivel Autorización / Alerta', FILL_GOB, FONT_BLACK_BOLD, 36), # AC (29)
+        ('Validación 1', FILL_VAL, FONT_BLACK_BOLD, 14),            # AD (30)
+        ('Validación 2', FILL_VAL, FONT_BLACK_BOLD, 14),            # AE (31)
+        ('Semáforo', FILL_VAL, FONT_BLACK_BOLD, 16),                # AF (32)
+        ('No. Contrato Venta', FILL_CONTRATO, FONT_BLACK_BOLD, 18), # AG (33)
+        ('UM Contrato', FILL_CONTRATO, FONT_BLACK_BOLD, 12),        # AH (34)
+        ('Precio Contrato', FILL_CONTRATO, FONT_BLACK_BOLD, 14)     # AI (35)
     ]
     
     # Fila 1: Grupos Superiores Fusionados
-    ws_matriz.merge_cells(start_row=1, start_column=1, end_row=1, end_column=13)
+    ws_matriz.merge_cells(start_row=1, start_column=1, end_row=1, end_column=11)
     apply_header_style(ws_matriz.cell(row=1, column=1), "DATOS DE RUTA Y MATERIAL", FILL_NAVY, FONT_WHITE_BOLD)
     
-    ws_matriz.merge_cells(start_row=1, start_column=14, end_row=1, end_column=19)
-    apply_header_style(ws_matriz.cell(row=1, column=14), "CONDICIONES DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
+    ws_matriz.merge_cells(start_row=1, start_column=12, end_row=1, end_column=19)
+    apply_header_style(ws_matriz.cell(row=1, column=12), "DATOS DE VENTA (VK13)", FILL_NAVY, FONT_WHITE_BOLD)
     
-    ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=26)
-    apply_header_style(ws_matriz.cell(row=1, column=20), "CONDICIONES DE COMPRA (COSTO)", FILL_NAVY, FONT_WHITE_BOLD)
+    ws_matriz.merge_cells(start_row=1, start_column=20, end_row=1, end_column=25)
+    apply_header_style(ws_matriz.cell(row=1, column=20), "DATOS DE COMPRA (TRAOPE)", FILL_NAVY, FONT_WHITE_BOLD)
     
-    ws_matriz.merge_cells(start_row=1, start_column=27, end_row=1, end_column=29)
-    apply_header_style(ws_matriz.cell(row=1, column=27), "GOBERNANZA Y AUTORIZACIÓN", FILL_NAVY, FONT_WHITE_BOLD)
+    apply_header_style(ws_matriz.cell(row=1, column=26), "MARGEN MOP %", FILL_NAVY, FONT_WHITE_BOLD)
     
-    ws_matriz.merge_cells(start_row=1, start_column=30, end_row=1, end_column=32)
-    apply_header_style(ws_matriz.cell(row=1, column=30), "VALIDACIÓN DE MARGEN", FILL_NAVY, FONT_WHITE_BOLD)
+    ws_matriz.merge_cells(start_row=1, start_column=27, end_row=1, end_column=32)
+    apply_header_style(ws_matriz.cell(row=1, column=27), "VALIDACIÓN Y GOBERNANZA", FILL_NAVY, FONT_WHITE_BOLD)
     
     ws_matriz.merge_cells(start_row=1, start_column=33, end_row=1, end_column=35)
-    apply_header_style(ws_matriz.cell(row=1, column=33), "CONTRATO DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
+    apply_header_style(ws_matriz.cell(row=1, column=33), "CONTRATOS DE VENTA", FILL_NAVY, FONT_WHITE_BOLD)
     
     # Fila 2: Encabezados individuales
     for col_idx, (col_name, fill, font, width) in enumerate(headers, start=1):
@@ -1207,12 +1236,17 @@ def poblar_hoja_matriz(ws_matriz, df_matriz_sub, sheet_title="Matriz"):
     ws_matriz.freeze_panes = "A3"
     
     cols_order = [
+        # A - K
         'Concat1', 'Concat2', 'Sociedad', 'Ship From', 'Nombre SF',
-        'Centro', 'Desc. Centro', 'Destino', 'Material', 'Denominación',
-        'PV', 'Inicio Vigencia', 'Fin Vigencia',
-        'Clase Cond. MP', 'Importe MP', 'UM Venta', 'Clase Cond. Flete', 'Importe Flete', 'Cond. Expedición',
-        'No. Contrato Compra', 'Fin Vigencia Compra', 'Costo Total TRAOPE', 'Flete Compra', 'MP Compra (Costo Material)', 'UM Costo', 'Margen Material (MOP %)',
-        'Tipo Operación', 'Precio Referencia Base', 'Nivel Autorización / Alerta',
+        'Centro', 'Desc. Centro', 'Destino', 'Nombre Destino', 'Material', 'Denominación',
+        # L - S
+        'PV', 'Inicio Vigencia', 'Fin Vigencia', 'Modalidad Venta', 'Clase Cond. MP', 'Importe MP', 'UM Venta', 'Importe Flete',
+        # T - Y
+        'No. Contrato Compra', 'Inicio Vigencia Compra', 'Fin Vigencia Compra', 'Costo Total TRAOPE', 'Flete Compra', 'MP Compra (Costo Material)',
+        # Z
+        'Margen Material (MOP %)',
+        # AA - AI
+        'UM Costo', 'Tipo Operación', 'Nivel Autorización / Alerta',
         'Validacion 1', 'Validacion 2', 'Semaforo',
         'No. Contrato Venta', 'UM Contrato', 'Precio Contrato'
     ]
@@ -1226,9 +1260,9 @@ def poblar_hoja_matriz(ws_matriz, df_matriz_sub, sheet_title="Matriz"):
     
     for r_idx, row in enumerate(df_out.itertuples(index=False), start=3):
         soc_val = str(row[2]).strip() if row[2] is not None else ""
-        tipo_op_val = str(row[26]).strip() if row[26] is not None else ""
-        fin_vig_compra = row[20]
-        es_expirando = es_proximo_a_vencer(fin_vig_compra) if (tipo_op_val == 'TRADING' or soc_val in ('7180', '7277')) else False
+        tipo_op_val = str(row[27]).strip() if row[27] is not None else ""
+        fin_vig_compra = row[21]
+        es_expirando = es_proximo_a_vencer(fin_vig_compra) if (tipo_op_val == 'TERCEROS' or soc_val in ('7180', '7277')) else False
         
         for c_idx, val in enumerate(row, start=1):
             cell = ws_matriz.cell(row=r_idx, column=c_idx)
@@ -1246,10 +1280,11 @@ def poblar_hoja_matriz(ws_matriz, df_matriz_sub, sheet_title="Matriz"):
             cell.border = THIN_BORDER
             
             # Formatos numéricos y alineaciones
-            if c_idx in [15, 18, 22, 23, 24, 28, 30, 31, 35]: 
+            # Moneda: Importe MP (17), Importe Flete (19), Costo Total (23), Flete Compra (24), MP Compra (25), Val 1 (30), Val 2 (31), Precio Contrato (35)
+            if c_idx in [17, 19, 23, 24, 25, 30, 31, 35]: 
                 cell.number_format = '$#,##0.00'
                 cell.alignment = ALIGN_RIGHT
-            elif c_idx == 26: # Margen MOP %
+            elif c_idx == 26: # Margen MOP % (Col Z)
                 cell.number_format = '0.0%'
                 cell.alignment = ALIGN_RIGHT
                 if isinstance(val, (int, float)) and pd.notna(val):
@@ -1261,16 +1296,16 @@ def poblar_hoja_matriz(ws_matriz, df_matriz_sub, sheet_title="Matriz"):
                         cell.fill = FILL_GREEN
                     else:
                         cell.fill = FILL_REGIONAL
-            elif c_idx == 11: # PV
+            elif c_idx == 12: # PV (Col L)
                 cell.number_format = '#,##0.000'
                 cell.alignment = ALIGN_RIGHT
-            elif c_idx in [3, 4, 6, 8, 9, 12, 13, 14, 16, 17, 19, 20, 21, 25, 27, 32, 33, 34]:
+            elif c_idx in [3, 4, 6, 8, 10, 13, 14, 15, 16, 18, 20, 21, 22, 27, 28, 29, 32, 33, 34]:
                 cell.alignment = ALIGN_CENTER
             else:
                 cell.alignment = ALIGN_LEFT
                 
-            # Alerta Próximo a Vencer (+- 2 meses / 60 días) en Contratos de Compra Terceros (Cols 20 y 21)
-            if c_idx in [20, 21] and es_expirando:
+            # Alerta Próximo a Vencer en Contratos de Compra Terceros (Cols 21 y 22)
+            if c_idx in [21, 22] and es_expirando:
                 cell.fill = FILL_WARN
                 
             # Alertas de Gobernanza (Col 29)
@@ -1302,15 +1337,20 @@ def poblar_hoja_matriz(ws_matriz, df_matriz_sub, sheet_title="Matriz"):
                 if abs(val) > 1 and soc_val == '7100':
                     cell.fill = FILL_WARN
 
-def escribir_excel(df_matriz, cedis=None, out_dir=None, raw_data_frames=None, filtro_traope='2024', formato_hojas='consolidado'):
+    # Si es Versión Cliente Final, ocultar columnas sensibles
+    if es_cliente_final:
+        # Columnas específicas a ocultar: A, B, N, Q, T (La W permanece VISIBLE a petición)
+        for col_let in ['A', 'B', 'N', 'Q', 'T']:
+            ws_matriz.column_dimensions[col_let].hidden = True
+            
+        # Rango extendido a ocultar: Desde AA (col 27) hasta AI (col 35)
+        for c_num in range(27, len(headers) + 1):
+            ws_matriz.column_dimensions[get_column_letter(c_num)].hidden = True
+
+def escribir_excel(df_matriz, cedis=None, out_dir=None, raw_data_frames=None, filtro_traope='2024', formato_hojas='consolidado', generar_master=True, generar_cliente=True, exportar_powerbi=True):
     """
     Genera el archivo Excel corporativo CEMEX optimizado con Dashboard y distribución de hojas seleccionada.
-    
-    Modalidades de formato_hojas:
-    - 'consolidado': Dashboard + 1 sola hoja 'Matriz' con todos los registros.
-    - 'por_cedis': Dashboard + 1 pestaña por cada centro CEDIS (ej. 'CEDIS_D836', 'CEDIS_D838').
-    - 'por_sociedad': Dashboard + pestañas separadas por Sociedad ('7100 - Filiales', '7180 - Trading', etc.).
-    - 'hibrido': Dashboard + 1 pestaña global consolidada + pestañas individuales por CEDIS.
+    Soporta generación de Versión Master (interna), Versión Cliente Final y Dataset para Power BI.
     """
     if df_matriz.empty:
         logging.error("DataFrame vacío, no se generará Excel.")
@@ -1356,82 +1396,245 @@ def escribir_excel(df_matriz, cedis=None, out_dir=None, raw_data_frames=None, fi
         out_dir = os.path.join(script_dir, "_salidas_integradas")
     os.makedirs(out_dir, exist_ok=True)
     
-    out_file = os.path.join(out_dir, f"Matriz_Precios_{cedis_tag}_{fmt_tag}_{tag_ft_file}_{fecha_str}.xlsx")
-    logging.info(f"Escribiendo Excel con formato '{formato_hojas}': {out_file}")
+    archivos_generados = []
     
-    wb = openpyxl.Workbook()
+    # =========================================================================
+    # 1. GENERACIÓN VERSIÓN MASTER (COMPLETA / INTERNA)
+    # =========================================================================
+    if generar_master:
+        out_file_master = os.path.join(out_dir, f"Matriz_Precios_{cedis_tag}_Master_{fmt_tag}_{tag_ft_file}_{fecha_str}.xlsx")
+        logging.info(f"Escribiendo Versión Master: {out_file_master}")
+        
+        wb_master = openpyxl.Workbook()
+        
+        if formato_hojas == 'consolidado':
+            ws_m = wb_master.active
+            ws_m.title = "Matriz"
+            poblar_hoja_matriz(ws_m, df_matriz, "Matriz", es_cliente_final=False)
+        elif formato_hojas == 'por_cedis':
+            centros = sorted([str(c) for c in df_matriz['Centro'].dropna().unique()])
+            first = True
+            for c in centros:
+                df_c = df_matriz[df_matriz['Centro'].astype(str) == c]
+                if df_c.empty:
+                    continue
+                title_sheet = sanitize_sheet_name(f"CEDIS_{c}")
+                if first:
+                    ws_c = wb_master.active
+                    ws_c.title = title_sheet
+                    first = False
+                else:
+                    ws_c = wb_master.create_sheet(title=title_sheet)
+                poblar_hoja_matriz(ws_c, df_c, f"CEDIS {c}", es_cliente_final=False)
+        elif formato_hojas == 'por_sociedad':
+            sociedades = sorted([str(s) for s in df_matriz['Sociedad'].dropna().unique()])
+            map_soc_names = {
+                '7100': '7100 - Filiales Concretos',
+                '7180': '7180 - Agregados Terceros',
+                '7277': '7277 - Terceros Especial'
+            }
+            first = True
+            for s in sociedades:
+                df_s = df_matriz[df_matriz['Sociedad'].astype(str) == s]
+                if df_s.empty:
+                    continue
+                s_nom = map_soc_names.get(s, f"Sociedad_{s}")
+                title_sheet = sanitize_sheet_name(s_nom)
+                if first:
+                    ws_s = wb_master.active
+                    ws_s.title = title_sheet
+                    first = False
+                else:
+                    ws_s = wb_master.create_sheet(title=title_sheet)
+                poblar_hoja_matriz(ws_s, df_s, s_nom, es_cliente_final=False)
+        elif formato_hojas == 'hibrido':
+            ws_global = wb_master.active
+            ws_global.title = "Matriz Global"
+            poblar_hoja_matriz(ws_global, df_matriz, "Matriz Global", es_cliente_final=False)
+            
+            centros = sorted([str(c) for c in df_matriz['Centro'].dropna().unique()])
+            for c in centros:
+                df_c = df_matriz[df_matriz['Centro'].astype(str) == c]
+                if df_c.empty:
+                    continue
+                title_sheet = sanitize_sheet_name(f"CEDIS_{c}")
+                ws_c = wb_master.create_sheet(title=title_sheet)
+                poblar_hoja_matriz(ws_c, df_c, f"CEDIS {c}", es_cliente_final=False)
+        else:
+            ws_m = wb_master.active
+            ws_m.title = "Matriz"
+            poblar_hoja_matriz(ws_m, df_matriz, "Matriz", es_cliente_final=False)
+            
+        construir_dashboard_ejecutivo(wb_master, df_matriz, cedis_label, fecha_legible, filtro_traope=filtro_traope)
+        wb_master.save(out_file_master)
+        archivos_generados.append(out_file_master)
+
+    # =========================================================================
+    # 2. GENERACIÓN VERSIÓN CLIENTE FINAL (COLUMNAS SENSIBLES OCULTAS)
+    # =========================================================================
+    if generar_cliente:
+        out_file_cli = os.path.join(out_dir, f"Matriz_Precios_{cedis_tag}_ClienteFinal_{fmt_tag}_{tag_ft_file}_{fecha_str}.xlsx")
+        logging.info(f"Escribiendo Versión Cliente Final: {out_file_cli}")
+        
+        wb_cli = openpyxl.Workbook()
+        
+        if formato_hojas == 'consolidado':
+            ws_m = wb_cli.active
+            ws_m.title = "Matriz Precios"
+            poblar_hoja_matriz(ws_m, df_matriz, "Matriz Precios", es_cliente_final=True)
+        elif formato_hojas == 'por_cedis':
+            centros = sorted([str(c) for c in df_matriz['Centro'].dropna().unique()])
+            first = True
+            for c in centros:
+                df_c = df_matriz[df_matriz['Centro'].astype(str) == c]
+                if df_c.empty:
+                    continue
+                title_sheet = sanitize_sheet_name(f"CEDIS_{c}")
+                if first:
+                    ws_c = wb_cli.active
+                    ws_c.title = title_sheet
+                    first = False
+                else:
+                    ws_c = wb_cli.create_sheet(title=title_sheet)
+                poblar_hoja_matriz(ws_c, df_c, f"CEDIS {c}", es_cliente_final=True)
+        elif formato_hojas == 'por_sociedad':
+            sociedades = sorted([str(s) for s in df_matriz['Sociedad'].dropna().unique()])
+            map_soc_names = {
+                '7100': '7100 - Filiales Concretos',
+                '7180': '7180 - Agregados Terceros',
+                '7277': '7277 - Terceros Especial'
+            }
+            first = True
+            for s in sociedades:
+                df_s = df_matriz[df_matriz['Sociedad'].astype(str) == s]
+                if df_s.empty:
+                    continue
+                s_nom = map_soc_names.get(s, f"Sociedad_{s}")
+                title_sheet = sanitize_sheet_name(s_nom)
+                if first:
+                    ws_s = wb_cli.active
+                    ws_s.title = title_sheet
+                    first = False
+                else:
+                    ws_s = wb_cli.create_sheet(title=title_sheet)
+                poblar_hoja_matriz(ws_s, df_s, s_nom, es_cliente_final=True)
+        else:
+            ws_m = wb_cli.active
+            ws_m.title = "Matriz Precios"
+            poblar_hoja_matriz(ws_m, df_matriz, "Matriz Precios", es_cliente_final=True)
+            
+        wb_cli.save(out_file_cli)
+        archivos_generados.append(out_file_cli)
+
+    # =========================================================================
+    # 3. EXPORTACIÓN DATASET Y PROYECTO PARA POWER BI (.PBIP)
+    # =========================================================================
+    if exportar_powerbi:
+        pbi_file = os.path.join(out_dir, f"Base_PowerBI_Agregados_{fecha_str}.xlsx")
+        try:
+            with pd.ExcelWriter(pbi_file, engine='openpyxl') as writer:
+                df_matriz.to_excel(writer, sheet_name="Data_Agregados", index=False)
+            logging.info(f"Dataset Power BI exportado: {pbi_file}")
+            archivos_generados.append(pbi_file)
+            
+            # Generar / Actualizar proyecto completo Power BI (.pbip)
+            try:
+                import build_powerbi_pbip
+                pbip_proj_dir = os.path.join(out_dir, "PowerBI_Project")
+                pbip_path = build_powerbi_pbip.crear_proyecto_pbip(pbip_proj_dir, pbi_file)
+                archivos_generados.append(pbip_path)
+            except Exception as e_pbip:
+                logging.warning(f"No se pudo crear el proyecto .pbip: {e_pbip}")
+                
+        except Exception as e:
+            logging.warning(f"No se pudo generar archivo plano Power BI: {e}")
+
+    logging.info(f"¡Proceso completado exitosamente! Archivos generados: {len(archivos_generados)}")
+    return archivos_generados[0] if archivos_generados else None
+
+# =============================================================================
+# PUBLICACIÓN SEGMENTADA A CARPETA COMPARTIDA (CHAMPIONS / CLIENTES)
+# =============================================================================
+
+def publicar_matrices_champions(df_matriz, ruta_compartida, cedis_list=None, subcarpetas=True):
+    """
+    Publica las matrices de precios segmentadas para los Champions en la carpeta compartida especificada
+    (SharePoint, OneDrive sincronizado, o carpeta de red UNC).
     
-    # Modo 1: Consolidado (1 sola hoja Matriz)
-    if formato_hojas == 'consolidado':
-        ws_matriz = wb.active
-        ws_matriz.title = "Matriz"
-        poblar_hoja_matriz(ws_matriz, df_matriz, "Matriz")
+    Cada archivo se genera en versión 'Cliente Final' (con costos internos TRAOPE y márgenes protegidos)
+    y contiene ÚNICAMENTE la información del CEDIS que le corresponde a dicho Champion.
+    """
+    if df_matriz.empty:
+        raise ValueError("El conjunto de datos está vacío, no hay información para publicar.")
         
-    # Modo 2: Pestaña individual por cada CEDIS
-    elif formato_hojas == 'por_cedis':
-        centros = sorted([str(c) for c in df_matriz['Centro'].dropna().unique()])
-        first = True
-        for c in centros:
-            df_c = df_matriz[df_matriz['Centro'].astype(str) == c]
-            if df_c.empty:
-                continue
-            title_sheet = sanitize_sheet_name(f"CEDIS_{c}")
-            if first:
-                ws_c = wb.active
-                ws_c.title = title_sheet
-                first = False
-            else:
-                ws_c = wb.create_sheet(title=title_sheet)
-            poblar_hoja_matriz(ws_c, df_c, f"CEDIS {c}")
-            
-    # Modo 3: Pestaña por Sociedad / Org. Ventas
-    elif formato_hojas == 'por_sociedad':
-        sociedades = sorted([str(s) for s in df_matriz['Sociedad'].dropna().unique()])
-        map_soc_names = {
-            '7100': '7100 - Filiales Concretos',
-            '7180': '7180 - Agregados Trading',
-            '7277': '7277 - Trading Terceros'
-        }
-        first = True
-        for s in sociedades:
-            df_s = df_matriz[df_matriz['Sociedad'].astype(str) == s]
-            if df_s.empty:
-                continue
-            s_nom = map_soc_names.get(s, f"Sociedad_{s}")
-            title_sheet = sanitize_sheet_name(s_nom)
-            if first:
-                ws_s = wb.active
-                ws_s.title = title_sheet
-                first = False
-            else:
-                ws_s = wb.create_sheet(title=title_sheet)
-            poblar_hoja_matriz(ws_s, df_s, s_nom)
-            
-    # Modo 4: Híbrido (Matriz Global Consolidada + Pestañas por CEDIS)
-    elif formato_hojas == 'hibrido':
-        ws_global = wb.active
-        ws_global.title = "Matriz Global"
-        poblar_hoja_matriz(ws_global, df_matriz, "Matriz Global")
-        
-        centros = sorted([str(c) for c in df_matriz['Centro'].dropna().unique()])
-        for c in centros:
-            df_c = df_matriz[df_matriz['Centro'].astype(str) == c]
-            if df_c.empty:
-                continue
-            title_sheet = sanitize_sheet_name(f"CEDIS_{c}")
-            ws_c = wb.create_sheet(title=title_sheet)
-            poblar_hoja_matriz(ws_c, df_c, f"CEDIS {c}")
+    os.makedirs(ruta_compartida, exist_ok=True)
+    
+    # Determinar qué centros procesar
+    if cedis_list:
+        centros = [str(c).strip().upper() for c in cedis_list if str(c).strip().upper() not in ('', 'TODOS')]
     else:
-        ws_matriz = wb.active
-        ws_matriz.title = "Matriz"
-        poblar_hoja_matriz(ws_matriz, df_matriz, "Matriz")
+        centros = sorted([str(c).strip().upper() for c in df_matriz['Centro'].dropna().unique() if str(c).strip().upper() != ''])
         
-    # Construcción de la Hoja 1: Dashboard Ejecutivo (siempre al inicio en index=0)
-    construir_dashboard_ejecutivo(wb, df_matriz, cedis_label, fecha_legible, filtro_traope=filtro_traope)
+    if not centros:
+        raise ValueError("No se encontraron centros CEDIS válidos para publicar.")
+        
+    archivos_generados = []
+    rutas_por_cedis = {}
+    total_rutas = 0
     
-    wb.save(out_file)
-    logging.info(f"¡Excel guardado exitosamente sin errores de XML!")
-    return out_file
+    for c in centros:
+        df_c = df_matriz[df_matriz['Centro'].astype(str).str.strip().str.upper() == c]
+        if df_c.empty:
+            continue
+            
+        rutas_cnt = len(df_c)
+        rutas_por_cedis[c] = rutas_cnt
+        total_rutas += rutas_cnt
+        
+        # Subcarpeta individual por CEDIS si está habilitado (permite asignar permisos individuales)
+        dest_dir = os.path.join(ruta_compartida, f"CEDIS_{c}") if subcarpetas else ruta_compartida
+        os.makedirs(dest_dir, exist_ok=True)
+        
+        file_path = os.path.join(dest_dir, f"Matriz_Precios_{c}.xlsx")
+        
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = sanitize_sheet_name(f"CEDIS_{c}")
+        poblar_hoja_matriz(ws, df_c, f"CEDIS {c}", es_cliente_final=True)
+        wb.save(file_path)
+        archivos_generados.append(file_path)
+        logging.info(f"Publicado CEDIS {c}: {file_path} ({rutas_cnt} rutas)")
+        
+    # Escribir manifiesto de control de auditoría
+    fecha_dt = datetime.now()
+    manifest_path = os.path.join(ruta_compartida, "_Control_Publicacion_Champions.txt")
+    with open(manifest_path, "w", encoding="utf-8") as f_man:
+        f_man.write("=================================================================\n")
+        f_man.write("CEMEX AGREGADOS - REGISTRO DE PUBLICACIÓN A CARPETA COMPARTIDA\n")
+        f_man.write("=================================================================\n")
+        f_man.write(f"Fecha y Hora: {fecha_dt.strftime('%d/%m/%Y %H:%M:%S')}\n")
+        f_man.write(f"Usuario emisor: {os.getenv('USERNAME', 'N/A')} en {os.getenv('COMPUTERNAME', 'N/A')}\n")
+        f_man.write(f"Destino: {ruta_compartida}\n")
+        f_man.write(f"Estructura: {'Subcarpetas individuales por CEDIS' if subcarpetas else 'Archivos directos'}\n")
+        f_man.write(f"Nivel de seguridad: Versión Cliente Final (Costos y márgenes sensibles protegidos)\n")
+        f_man.write(f"Total CEDIS publicados: {len(rutas_por_cedis)}\n")
+        f_man.write(f"Total rutas distribuidas: {total_rutas}\n")
+        f_man.write("-----------------------------------------------------------------\n")
+        f_man.write("DETALLE DE ARCHIVOS POR CENTRO:\n")
+        for c, cnt in rutas_por_cedis.items():
+            sub_tag = f"CEDIS_{c}/Matriz_Precios_{c}.xlsx" if subcarpetas else f"Matriz_Precios_{c}.xlsx"
+            f_man.write(f"  * Centro {c}: {cnt:4d} rutas -> {sub_tag}\n")
+        f_man.write("=================================================================\n")
+        
+    return {
+        'exito': True,
+        'ruta': ruta_compartida,
+        'total_cedis': len(rutas_por_cedis),
+        'total_rutas': total_rutas,
+        'archivos': archivos_generados,
+        'manifiesto': manifest_path,
+        'rutas_por_cedis': rutas_por_cedis
+    }
 
 # =============================================================================
 # CLI Y EJECUCIÓN
@@ -1461,6 +1664,7 @@ def main():
     default_out = os.path.join(script_dir, "_salidas_integradas")
     parser.add_argument('--output', type=str, default=default_out, help="Carpeta de salida")
     parser.add_argument('--refresh-cache', action='store_true', help="Ignorar caché y reprocesar el Excel")
+    parser.add_argument('--publicar-champions', type=str, default=None, help="Ruta a carpeta compartida para publicar matrices por CEDIS")
     
     args = parser.parse_args()
     
@@ -1489,6 +1693,8 @@ def main():
             filtro_traope=args.filtro_traope,
             formato_hojas=args.formato_hojas
         )
+        if args.publicar_champions:
+            publicar_matrices_champions(df_matriz, args.publicar_champions, cedis_list=args.cedis)
     elif args.mp and args.flete:
         df_mp = parsear_txt(args.mp)
         df_flete = parsear_txt(args.flete)
