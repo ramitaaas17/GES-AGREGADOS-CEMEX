@@ -9,6 +9,12 @@ from tkinter import ttk, messagebox, filedialog
 import pandas as pd
 import openpyxl
 
+try:
+    import win32com.client
+    HAS_WIN32COM = True
+except ImportError:
+    HAS_WIN32COM = False
+
 # Importar motor de procesamiento unificado
 import matriz_integrada
 
@@ -24,6 +30,9 @@ CLR_GREEN_HOVER = "#218838"
 CLR_TEXT        = "#1E293B"
 CLR_MUTED       = "#64748B"
 CLR_BORDER      = "#CBD5E1"
+CLR_SNOW_BG     = "#E2E8F0"  # Fondo barra Snowflake
+CLR_SNOW_OK     = "#166534"  # Verde texto Snowflake sincronizado
+CLR_SNOW_WARN   = "#B45309"  # Ámbar advertencia Snowflake
 
 FONT_TITLE = ("Segoe UI", 12, "bold")
 FONT_SUB   = ("Segoe UI", 8, "normal")
@@ -35,17 +44,22 @@ class LanzadorCEMEXApp:
     def __init__(self, root):
         self.root = root
         self.root.title("CEMEX | Sistema Integral de Matriz de Precios y Gobernanza")
-        self.root.geometry("600x700")
-        self.root.minsize(500, 520)
+        self.root.geometry("600x730")
+        self.root.minsize(500, 540)
         self.root.configure(bg=CLR_BG)
         
         # Centrar ventana en pantalla
-        self.centrar_ventana(600, 700)
+        self.centrar_ventana(600, 730)
         
         self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.cfg_compartida = self.cargar_config_compartida()
         self.source_file = self.detectar_archivo_fuente()
         self.all_cedis = self.cargar_lista_cedis()
+        
+        # Estado de sincronización Snowflake
+        self.is_syncing_snowflake = False
+        self.auto_sync_snowflake = self.cfg_compartida.get("auto_sync_snowflake", True)
+        self.ultimo_sync_str = self.cfg_compartida.get("ultimo_sync_snowflake", "Sin registrar")
         
         # Diccionario para almacenar el estado booleano de cada CEDIS
         self.cedis_vars = {}
@@ -60,6 +74,12 @@ class LanzadorCEMEXApp:
         
         self.construir_interfaz()
         self.actualizar_contador()
+        
+        self.root.protocol("WM_DELETE_WINDOW", self.al_cerrar_ventana)
+        
+        # Iniciar sincronización con Snowflake en segundo plano al arrancar
+        if self.auto_sync_snowflake:
+            self.root.after(400, self.iniciar_sincronizacion_snowflake)
 
     def centrar_ventana(self, ancho, alto):
         self.root.update_idletasks()
@@ -80,7 +100,7 @@ class LanzadorCEMEXApp:
                         return cfg
             except Exception:
                 pass
-        return {"ruta_compartida": default_dir, "organizar_subcarpetas": True}
+        return {"ruta_compartida": default_dir, "organizar_subcarpetas": True, "auto_sync_snowflake": True}
 
     def guardar_config_compartida(self, cfg):
         cfg_path = os.path.join(self.base_dir, "config_compartida.json")
@@ -148,6 +168,50 @@ class LanzadorCEMEXApp:
         
         lbl_sub = tk.Label(header_frame, text="Cálculo automático de MOP %, Desglose de Flete y Dashboard Ejecutivo", font=FONT_SUB, fg="#CBD5E1", bg=CLR_NAVY)
         lbl_sub.pack(anchor="w", pady=(1, 0))
+
+        # 1.1 BANNER DE SINCRONIZACIÓN SNOWFLAKE (SUB-HEADER)
+        snow_frame = tk.Frame(self.root, bg=CLR_SNOW_BG, padx=14, pady=4)
+        snow_frame.pack(fill="x", side="top")
+        
+        self.lbl_snow_status = tk.Label(
+            snow_frame,
+            text=f"❄️ Snowflake: Listo  (Última sinc: {self.ultimo_sync_str})",
+            font=("Segoe UI", 8, "normal"),
+            fg=CLR_TEXT,
+            bg=CLR_SNOW_BG,
+            anchor="w"
+        )
+        self.lbl_snow_status.pack(side="left", fill="x", expand=True)
+
+        self.snow_pbar = ttk.Progressbar(snow_frame, mode="indeterminate", length=80)
+
+        self.auto_sync_var = tk.BooleanVar(value=self.auto_sync_snowflake)
+        cb_auto = tk.Checkbutton(
+            snow_frame,
+            text="Auto al abrir",
+            variable=self.auto_sync_var,
+            font=("Segoe UI", 8, "normal"),
+            bg=CLR_SNOW_BG,
+            fg="#475569",
+            selectcolor=CLR_WHITE,
+            cursor="hand2",
+            command=self.guardar_opcion_auto_sync
+        )
+        cb_auto.pack(side="right", padx=(4, 0))
+
+        self.btn_sync_snow = tk.Button(
+            snow_frame,
+            text="🔄 Sincronizar",
+            font=("Segoe UI", 8, "bold"),
+            bg=CLR_WHITE,
+            fg=CLR_NAVY,
+            relief="groove",
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=self.iniciar_sincronizacion_snowflake
+        )
+        self.btn_sync_snow.pack(side="right", padx=2)
 
         # 2. FOOTER FIJO (SIEMPRE VISIBLE ABAJO)
         footer_frame = tk.Frame(self.root, bg=CLR_BG, padx=14, pady=6)
@@ -385,6 +449,8 @@ class LanzadorCEMEXApp:
         self.checkbox_widgets.clear()
 
         for c in lista_cedis:
+            if c not in self.cedis_vars:
+                self.cedis_vars[c] = tk.BooleanVar(value=False)
             var = self.cedis_vars[c]
             cb = tk.Checkbutton(
                 self.scrollable_frame,
@@ -437,10 +503,142 @@ class LanzadorCEMEXApp:
         else:
             self.lbl_count.config(text=f"Centros seleccionados: {total_marcados} de {total_total}")
 
+    # =========================================================================
+    # LÓGICA DE SINCRONIZACIÓN AUTOMÁTICA CON SNOWFLAKE (SEGUNDO PLANO)
+    # =========================================================================
+    def guardar_opcion_auto_sync(self):
+        self.auto_sync_snowflake = self.auto_sync_var.get()
+        self.cfg_compartida["auto_sync_snowflake"] = self.auto_sync_snowflake
+        self.guardar_config_compartida(self.cfg_compartida)
+
+    def iniciar_sincronizacion_snowflake(self):
+        if self.is_syncing_snowflake:
+            return
+        if not HAS_WIN32COM:
+            self.lbl_snow_status.config(text="⚠️ Módulo win32com no disponible para automatizar Excel.", fg=CLR_SNOW_WARN)
+            return
+        if not os.path.exists(self.source_file):
+            self.lbl_snow_status.config(text="⚠️ Archivo fuente .xlsm no encontrado.", fg=CLR_SNOW_WARN)
+            return
+
+        self.is_syncing_snowflake = True
+        self.btn_sync_snow.config(state="disabled", text="⏳ Sincronizando...")
+        self.lbl_snow_status.config(text="🔄 Conectando a Snowflake y actualizando consultas en segundo plano...", fg=CLR_BLUE_LIGHT)
+        self.snow_pbar.pack(side="left", padx=6, before=self.btn_sync_snow)
+        self.snow_pbar.start(10)
+
+        hilo = threading.Thread(target=self._hilo_sincronizar_snowflake, daemon=True)
+        hilo.start()
+
+    def _hilo_sincronizar_snowflake(self):
+        try:
+            excel = win32com.client.Dispatch("Excel.Application")
+            excel.Visible = False
+            excel.DisplayAlerts = False
+            excel.ScreenUpdating = False
+            excel.EnableEvents = False
+            excel.AskToUpdateLinks = False
+            try:
+                excel.AutomationSecurity = 1  # msoAutomationSecurityLow
+            except Exception:
+                pass
+
+            wb = None
+            try:
+                wb = excel.Workbooks.Open(
+                    Filename=os.path.abspath(self.source_file),
+                    UpdateLinks=0,
+                    ReadOnly=False,
+                    IgnoreReadOnlyRecommended=True
+                )
+                for i in range(1, wb.Connections.Count + 1):
+                    conn = wb.Connections.Item(i)
+                    if hasattr(conn, "OLEDBConnection"):
+                        conn.OLEDBConnection.BackgroundQuery = False
+
+                wb.RefreshAll()
+                excel.CalculateUntilAsyncQueriesDone()
+                wb.Save()
+            finally:
+                if wb:
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception:
+                        pass
+                try:
+                    excel.Quit()
+                except Exception:
+                    pass
+
+            # Invalidar archivo de caché para forzar re-lectura limpia
+            cache_file = self.source_file + ".mci_cache_.pkl"
+            if os.path.exists(cache_file):
+                try:
+                    os.remove(cache_file)
+                except Exception:
+                    pass
+
+            self.root.after(0, self._finalizar_sincronizacion_snowflake, True, "")
+        except Exception as e:
+            self.root.after(0, self._finalizar_sincronizacion_snowflake, False, str(e))
+
+    def _finalizar_sincronizacion_snowflake(self, exito, error_msg):
+        self.is_syncing_snowflake = False
+        self.snow_pbar.stop()
+        self.snow_pbar.pack_forget()
+        self.btn_sync_snow.config(state="normal", text="🔄 Sincronizar")
+
+        if exito:
+            hora_act = time.strftime("%H:%M:%S")
+            self.ultimo_sync_str = hora_act
+            self.cfg_compartida["ultimo_sync_snowflake"] = hora_act
+            self.guardar_config_compartida(self.cfg_compartida)
+            
+            # Recargar lista de CEDIS desde el archivo actualizado
+            self.recargar_cedis_tras_sincronizacion()
+            self.lbl_snow_status.config(
+                text=f"✅ Snowflake sincronizado ({hora_act}) | {len(self.all_cedis)} CEDIS detectados",
+                fg=CLR_SNOW_OK
+            )
+        else:
+            self.lbl_snow_status.config(
+                text="⚠️ Sincronización Snowflake no completada (usando datos locales)",
+                fg=CLR_SNOW_WARN
+            )
+
+    def recargar_cedis_tras_sincronizacion(self):
+        try:
+            nuevos_cedis = self.cargar_lista_cedis()
+            if nuevos_cedis:
+                for c in nuevos_cedis:
+                    if c not in self.cedis_vars:
+                        self.cedis_vars[c] = tk.BooleanVar(value=True if c in ["D836", "D838"] else False)
+                self.all_cedis = nuevos_cedis
+                self.filtrar_lista()
+                self.actualizar_contador()
+        except Exception:
+            pass
+
+    def al_cerrar_ventana(self):
+        self.root.destroy()
+
+    # =========================================================================
+    # GENERACIÓN Y PUBLICACIÓN
+    # =========================================================================
     def iniciar_generacion(self):
         if self.is_processing:
             return
-            
+
+        if self.is_syncing_snowflake:
+            proceder = messagebox.askyesno(
+                "Sincronización Snowflake en Curso",
+                "Snowflake se está actualizando en segundo plano para obtener los datos más recientes.\n\n"
+                "¿Desea continuar de todas formas con los datos locales existentes?\n\n"
+                "(Elija 'No' para esperar unos segundos a que termine la sincronización)."
+            )
+            if not proceder:
+                return
+
         seleccionados = [c for c, var in self.cedis_vars.items() if var.get()]
         if not seleccionados:
             messagebox.showwarning(
@@ -504,6 +702,16 @@ class LanzadorCEMEXApp:
     def iniciar_publicacion_champions(self):
         if self.is_processing:
             return
+
+        if self.is_syncing_snowflake:
+            proceder = messagebox.askyesno(
+                "Sincronización Snowflake en Curso",
+                "Snowflake se está actualizando en segundo plano para obtener los datos más recientes.\n\n"
+                "¿Desea continuar de todas formas con los datos locales existentes?\n\n"
+                "(Elija 'No' para esperar unos segundos a que termine la sincronización)."
+            )
+            if not proceder:
+                return
 
         seleccionados = [c for c, var in self.cedis_vars.items() if var.get()]
         if not seleccionados:
