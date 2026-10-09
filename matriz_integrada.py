@@ -108,8 +108,8 @@ def calc_validacion1(um_venta, um_costo, cond_exp, importe_mp, importe_flete, pv
     """
     Costo Teórico / Margen Esperado (Validación 1):
     - Si UM_venta=TN y UM_costo=TN: MP + Flete (ya están en TN).
-    - Si Cond.Expedicion=1 (Entregado): PV * MP.
-    - Else: (MP + (Flete or 0)) * PV.
+    - Si Cond. Expedición = 2 (Recogido): PV * MP (cliente recoge, no lleva flete).
+    - Si Cond. Expedición = 1 (Entregado) o 4 (Entrega directa): (MP + Flete) * PV.
     - Si falta PV en ramas que lo necesitan: None.
     """
     mp = importe_mp if pd.notna(importe_mp) else None
@@ -133,10 +133,18 @@ def calc_validacion1(um_venta, um_costo, cond_exp, importe_mp, importe_flete, pv
     except:
         cond = str(cond_exp).strip() if pd.notna(cond_exp) else ''
     
-    if cond == '1':
+    # 2 = Recogido (cliente recoge en planta/CEDIS, no lleva flete)
+    if cond in ('2', '02'):
         res = pv * mp
-    else:
+    # 1 = Entregado, 4 = Entrega directa (llevan flete)
+    elif cond in ('1', '01', '4', '04'):
         res = (mp + (flete if flete is not None else 0)) * pv
+    else:
+        # Si no hay condición explícita, inferir por presencia de flete
+        if flete is not None and flete > 0:
+            res = (mp + flete) * pv
+        else:
+            res = pv * mp
     return round(res, 2)
 
 def calc_validacion2(importe_costo, validacion1, sociedad=None):
@@ -247,7 +255,7 @@ def eval_semaforo(row):
     """
     Semáforo de inconsistencias operativas y cumplimiento de negocio:
     - SIN_MP: falta precio de venta de material
-    - SIN_FLETE: en modalidad entregada (01/04), no se encontró flete
+    - SIN_FLETE: en modalidad entregada (1 Entregado / 4 Entrega directa), no se encontró flete
     - SIN_COSTO: en trading, no se encontró orden de compra
     - SIN_PV: falta factor de peso volumétrico
     - DIFERENCIA: desviación mayor a $1 entre costo real y teórico (exclusivo para 7100 filiales al costo)
@@ -260,11 +268,13 @@ def eval_semaforo(row):
         return 'SIN_MP'
     
     cond_exp = str(row.get('Cond. Expedición', '')).strip()
+    modalidad = str(row.get('Modalidad Venta', '')).strip()
     flete = row.get('Importe Flete') if 'Importe Flete' in row else row.get('Importe_Flete')
     
-    # En 02 (Recogido), el cliente manda camiones -> NO lleva flete, NO es anomalía
-    if cond_exp in ('1', '01', '4', '04'):
-        if pd.isna(flete):
+    # 1 Entregado y 4 Entrega directa exigen flete obligatorio.
+    # 2 Recogido (o vacío sin flete) -> cliente manda camiones -> NO lleva flete, NO es anomalía.
+    if cond_exp in ('1', '01', '4', '04') or modalidad in ('Entregado', 'Entrega directa'):
+        if pd.isna(flete) or flete is None or flete <= 0:
             return 'SIN_FLETE'
             
     tipo_op = row.get('Tipo Operación', '')
@@ -733,12 +743,19 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
             imp_flete = f_row['Importe'] if f_row is not None else None
             um_venta = row.get('Unidad', '')
             
-            # Asignación Automática de Modalidad (Basada en VK13):
-            # Si no hay flete cargado o Cond. Exp == 1 -> 'Recogido'. Si hay flete -> 'Entregado'.
-            if str(cond_exp).strip() == '1' or imp_flete is None or imp_flete == 0:
+            # Asignación de Modalidad de Venta (1=Entregado, 4=Entrega directa, 2 o vacío sin flete=Recogido):
+            cond_str = str(cond_exp).strip()
+            if cond_str in ('1', '01'):
+                modalidad_venta = 'Entregado'
+            elif cond_str in ('4', '04'):
+                modalidad_venta = 'Entrega directa'
+            elif cond_str in ('2', '02'):
                 modalidad_venta = 'Recogido'
             else:
-                modalidad_venta = 'Entregado'
+                if imp_flete is not None and imp_flete > 0:
+                    modalidad_venta = 'Entregado'
+                else:
+                    modalidad_venta = 'Recogido'
             
             imp_costo_total = None
             imp_flete_compra = None
@@ -833,6 +850,7 @@ def procesar_datos(data, cedis=None, modo_a=True, filtro_traope='2024'):
                 'PV': pv_val,
                 'Inicio Vigencia': row.get('Inicio Validez', ''),
                 'Fin Vigencia': row.get('Valido a', ''),
+                'Cond. Expedición': cond_exp,
                 'Modalidad Venta': modalidad_venta,
                 'Clase Cond. MP': row.get('Clase Cond.', ''),
                 'Importe MP': imp_mp,

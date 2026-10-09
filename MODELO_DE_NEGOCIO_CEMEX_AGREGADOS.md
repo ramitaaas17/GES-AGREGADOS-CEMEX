@@ -71,8 +71,9 @@ La distribución física de agregados depende de una relación de 4 nodos clave:
 3. **Destinatario / Destino:** Identificador de la ubicación exacta de descarga (obra, patio de acopio, planta satélite).
 
 ### 3.2. Modalidades de Entrega (Condición de Expedición)
-- **Condición 1 (Recolección en Planta / FOB - Free On Board):** El cliente envía sus propios camiones a recoger el material a la cantera o CEDIS. En esta modalidad, **el flete pagado por CEMEX es $0.00**.
-- **Condición 2 o superior (Entrega en Obra / CIF - Cost, Insurance, Freight):** CEMEX coordina el transporte mediante su red de fleteros certificados. El precio final al cliente incluye el material más el importe de flete desagregado por kilómetro/zona.
+- **Condición 1 (Entregado / Entrega Estándar):** CEMEX coordina el flete hasta el punto de entrega. El flete es obligatorio y forma parte del precio final al cliente.
+- **Condición 2 o vacío sin flete (Recogido / FOB - Free On Board):** El cliente envía sus propios camiones a recoger el material a la cantera o CEDIS. En esta modalidad, **el flete pagado por CEMEX es $0.00** y no se exige flete en el semáforo.
+- **Condición 4 (Entrega directa / CIF):** Entrega directa en obra gestionada por fleteros de CEMEX. El flete es obligatorio en auditoría y semáforo.
 
 ---
 
