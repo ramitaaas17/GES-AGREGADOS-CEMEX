@@ -1410,7 +1410,10 @@ def escribir_excel(df_matriz, cedis=None, out_dir=None, raw_data_frames=None, fi
     
     tag_ft_file = "C2029" if str(filtro_traope).strip() == '2029' else "C2024"
     if out_dir is None:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
+        if getattr(sys, 'frozen', False):
+            script_dir = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
         out_dir = os.path.join(script_dir, "_salidas_integradas")
     os.makedirs(out_dir, exist_ok=True)
     

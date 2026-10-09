@@ -52,7 +52,10 @@ class LanzadorCEMEXApp:
         # Centrar ventana en pantalla
         self.centrar_ventana(600, 730)
         
-        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(os.path.abspath(sys.executable))
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
         self.cfg_compartida = self.cargar_config_compartida()
         self.source_file = self.detectar_archivo_fuente()
         self.all_cedis = self.cargar_lista_cedis()
