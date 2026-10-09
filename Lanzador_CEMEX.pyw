@@ -11,6 +11,7 @@ import openpyxl
 
 try:
     import win32com.client
+    import pythoncom
     HAS_WIN32COM = True
 except ImportError:
     HAS_WIN32COM = False
@@ -60,6 +61,7 @@ class LanzadorCEMEXApp:
         self.is_syncing_snowflake = False
         self.auto_sync_snowflake = self.cfg_compartida.get("auto_sync_snowflake", True)
         self.ultimo_sync_str = self.cfg_compartida.get("ultimo_sync_snowflake", "Sin registrar")
+        self.ultimo_error_snowflake = ""
         
         # Diccionario para almacenar el estado booleano de cada CEDIS
         self.cedis_vars = {}
@@ -182,6 +184,7 @@ class LanzadorCEMEXApp:
             anchor="w"
         )
         self.lbl_snow_status.pack(side="left", fill="x", expand=True)
+        self.lbl_snow_status.bind("<Button-1>", self.mostrar_detalle_error_snowflake)
 
         self.snow_pbar = ttk.Progressbar(snow_frame, mode="indeterminate", length=80)
 
@@ -530,7 +533,24 @@ class LanzadorCEMEXApp:
         hilo = threading.Thread(target=self._hilo_sincronizar_snowflake, daemon=True)
         hilo.start()
 
+    def mostrar_detalle_error_snowflake(self, event=None):
+        if self.ultimo_error_snowflake:
+            messagebox.showinfo(
+                "Diagnóstico de Conexión Snowflake",
+                f"Detalle técnico reportado por Excel / Snowflake:\n\n{self.ultimo_error_snowflake}\n\n"
+                f"📌 Motivos habituales:\n"
+                f"• Equipo fuera de la red CEMEX / VPN corporativa desconectada.\n"
+                f"• Credenciales de Snowflake pendientes de autenticación en este equipo.\n"
+                f"• Archivo .xlsm bloqueado o abierto por otra aplicación.\n\n"
+                f"El sistema continúa operando con la información local preexistente sin interrupción."
+            )
+
     def _hilo_sincronizar_snowflake(self):
+        if HAS_WIN32COM:
+            try:
+                pythoncom.CoInitialize()
+            except Exception:
+                pass
         try:
             excel = win32com.client.Dispatch("Excel.Application")
             excel.Visible = False
@@ -581,6 +601,12 @@ class LanzadorCEMEXApp:
             self.root.after(0, self._finalizar_sincronizacion_snowflake, True, "")
         except Exception as e:
             self.root.after(0, self._finalizar_sincronizacion_snowflake, False, str(e))
+        finally:
+            if HAS_WIN32COM:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
 
     def _finalizar_sincronizacion_snowflake(self, exito, error_msg):
         self.is_syncing_snowflake = False
@@ -589,6 +615,7 @@ class LanzadorCEMEXApp:
         self.btn_sync_snow.config(state="normal", text="🔄 Sincronizar")
 
         if exito:
+            self.ultimo_error_snowflake = ""
             hora_act = time.strftime("%H:%M:%S")
             self.ultimo_sync_str = hora_act
             self.cfg_compartida["ultimo_sync_snowflake"] = hora_act
@@ -598,12 +625,22 @@ class LanzadorCEMEXApp:
             self.recargar_cedis_tras_sincronizacion()
             self.lbl_snow_status.config(
                 text=f"✅ Snowflake sincronizado ({hora_act}) | {len(self.all_cedis)} CEDIS detectados",
-                fg=CLR_SNOW_OK
+                fg=CLR_SNOW_OK,
+                cursor=""
             )
         else:
+            self.ultimo_error_snowflake = error_msg
+            try:
+                log_path = os.path.join(self.base_dir, "snowflake_sync.log")
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] ERROR: {error_msg}\n")
+            except Exception:
+                pass
+
             self.lbl_snow_status.config(
-                text="⚠️ Sincronización Snowflake no completada (usando datos locales)",
-                fg=CLR_SNOW_WARN
+                text="⚠️ Sincronización Snowflake no completada (clic para ver detalle)",
+                fg=CLR_SNOW_WARN,
+                cursor="hand2"
             )
 
     def recargar_cedis_tras_sincronizacion(self):
