@@ -1,0 +1,17 @@
+﻿.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.bak*
+backups/
+~$*
+_recuperacion_tmp_*
+*.db
+staging_rutas.db
+Exportaciones_Rutas/
+diagnostico_excel/
+*.xlsm
+*.xlsx
+*.xlsb

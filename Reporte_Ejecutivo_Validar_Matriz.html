@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CEMEX | Reporte Ejecutivo: Auditoría Integral en "Validar Matriz"</title>
+    <style>
+        :root {
+            --cemex-blue: #023185;
+            --cemex-blue-dark: #011f5b;
+            --cemex-blue-light: #eaf0f8;
+            --cemex-red: #e3303d;
+            --cemex-red-dark: #b02630;
+            --cemex-gray-bg: #f4f6f9;
+            --cemex-card-bg: #ffffff;
+            --cemex-text: #1a1a1a;
+            --cemex-muted: #5a6268;
+            --cemex-border: #dde1e6;
+            --status-ok: #1b8a36;
+            --status-ok-bg: #e8f5e9;
+            --status-alert: #d97706;
+            --status-alert-bg: #fef3c7;
+            --status-error: #dc2626;
+            --status-error-bg: #fee2e2;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background-color: var(--cemex-gray-bg);
+            color: var(--cemex-text);
+            line-height: 1.6;
+            padding: 30px 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        /* Header Corporativo */
+        header {
+            background: linear-gradient(135deg, var(--cemex-blue) 0%, var(--cemex-blue-dark) 100%);
+            color: #ffffff;
+            padding: 40px;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px rgba(2, 49, 133, 0.15);
+            margin-bottom: 30px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        header::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 12px;
+            height: 100%;
+            background-color: var(--cemex-red);
+        }
+
+        .header-tag {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.18);
+            padding: 5px 14px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            letter-spacing: 0.8px;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+
+        header h1 {
+            font-size: 2.2rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            letter-spacing: -0.5px;
+        }
+
+        header p {
+            font-size: 1.1rem;
+            color: #dbe4f0;
+            max-width: 850px;
+        }
+
+        .meta-bar {
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255, 255, 255, 0.15);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 25px;
+            font-size: 0.9rem;
+            color: #c7d5e8;
+        }
+
+        .meta-bar strong {
+            color: #ffffff;
+        }
+
+        /* Resumen Ejecutivo / Métricas */
+        .executive-summary {
+            background: var(--cemex-card-bg);
+            border-radius: 14px;
+            padding: 30px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+            border: 1px solid var(--cemex-border);
+            margin-bottom: 30px;
+        }
+
+        .executive-summary h2 {
+            font-size: 1.4rem;
+            color: var(--cemex-blue);
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .executive-summary p {
+            color: var(--cemex-muted);
+            font-size: 1.05rem;
+            margin-bottom: 25px;
+        }
+
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 20px;
+        }
+
+        .kpi-card {
+            background: var(--cemex-gray-bg);
+            padding: 20px;
+            border-radius: 12px;
+            border-left: 5px solid var(--cemex-blue);
+        }
+
+        .kpi-card.red {
+            border-left-color: var(--cemex-red);
+        }
+
+        .kpi-card.green {
+            border-left-color: var(--status-ok);
+        }
+
+        .kpi-number {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--cemex-blue-dark);
+            margin-bottom: 5px;
+        }
+
+        .kpi-title {
+            font-weight: 600;
+            color: var(--cemex-text);
+            font-size: 0.95rem;
+            margin-bottom: 4px;
+        }
+
+        .kpi-desc {
+            font-size: 0.85rem;
+            color: var(--cemex-muted);
+        }
+
+        /* Los 3 Pilares de Validación */
+        .pillars-section {
+            margin-bottom: 35px;
+        }
+
+        .section-header {
+            margin-bottom: 20px;
+        }
+
+        .section-header h2 {
+            font-size: 1.5rem;
+            color: var(--cemex-blue-dark);
+        }
+
+        .section-header p {
+            color: var(--cemex-muted);
+            font-size: 0.95rem;
+        }
+
+        .pillars-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 25px;
+        }
+
+        .pillar-card {
+            background: var(--cemex-card-bg);
+            border-radius: 14px;
+            padding: 25px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+            border: 1px solid var(--cemex-border);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .pillar-top {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 15px;
+        }
+
+        .pillar-badge {
+            background: var(--cemex-blue-light);
+            color: var(--cemex-blue);
+            font-weight: 700;
+            font-size: 0.8rem;
+            padding: 5px 10px;
+            border-radius: 8px;
+            text-transform: uppercase;
+        }
+
+        .pillar-card h3 {
+            font-size: 1.25rem;
+            color: var(--cemex-blue);
+            margin-bottom: 8px;
+        }
+
+        .pillar-sap {
+            font-size: 0.85rem;
+            color: var(--cemex-red);
+            font-weight: 600;
+            margin-bottom: 15px;
+            display: block;
+        }
+
+        .pillar-list {
+            list-style: none;
+            margin-bottom: 20px;
+        }
+
+        .pillar-list li {
+            position: relative;
+            padding-left: 22px;
+            margin-bottom: 10px;
+            font-size: 0.92rem;
+            color: #333333;
+        }
+
+        .pillar-list li::before {
+            content: "✓";
+            position: absolute;
+            left: 0;
+            color: var(--status-ok);
+            font-weight: 700;
+        }
+
+        .pillar-risk {
+            background: #fff8f8;
+            border-left: 3px solid var(--cemex-red);
+            padding: 10px 14px;
+            border-radius: 0 8px 8px 0;
+            font-size: 0.85rem;
+            color: #8c1d24;
+        }
+
+        /* Tabla Detallada de Columnas */
+        .table-section {
+            background: var(--cemex-card-bg);
+            border-radius: 14px;
+            padding: 30px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+            border: 1px solid var(--cemex-border);
+            margin-bottom: 35px;
+        }
+
+        .table-section h2 {
+            font-size: 1.4rem;
+            color: var(--cemex-blue);
+            margin-bottom: 10px;
+        }
+
+        .table-section p {
+            color: var(--cemex-muted);
+            font-size: 0.95rem;
+            margin-bottom: 20px;
+        }
+
+        .table-responsive {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+            text-align: left;
+        }
+
+        th {
+            background-color: var(--cemex-gray-bg);
+            color: var(--cemex-blue-dark);
+            font-weight: 700;
+            padding: 12px 14px;
+            border-bottom: 2px solid var(--cemex-border);
+            white-space: nowrap;
+        }
+
+        td {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--cemex-border);
+            vertical-align: middle;
+        }
+
+        tr:hover {
+            background-color: #fafbfc;
+        }
+
+        /* Badges de Estado */
+        .badge {
+            display: inline-block;
+            padding: 4px 9px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }
+
+        .badge-audit {
+            background-color: var(--status-ok-bg);
+            color: var(--status-ok);
+            border: 1px solid #b7eb8f;
+        }
+
+        .badge-key {
+            background-color: var(--cemex-blue-light);
+            color: var(--cemex-blue);
+            border: 1px solid #adc6ff;
+        }
+
+        .badge-math {
+            background-color: var(--status-alert-bg);
+            color: var(--status-alert);
+            border: 1px solid #ffe58f;
+        }
+
+        .badge-internal {
+            background-color: #f5f5f5;
+            color: #8c8c8c;
+            border: 1px solid #d9d9d9;
+        }
+
+        /* Casos de Éxito / Beneficios */
+        .benefits-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            margin-bottom: 35px;
+        }
+
+        .benefit-card {
+            background: var(--cemex-card-bg);
+            padding: 24px;
+            border-radius: 12px;
+            border: 1px solid var(--cemex-border);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
+        }
+
+        .benefit-card h4 {
+            color: var(--cemex-blue-dark);
+            font-size: 1.1rem;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .benefit-card p {
+            color: var(--cemex-muted);
+            font-size: 0.9rem;
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            padding: 25px 0 10px 0;
+            color: var(--cemex-muted);
+            font-size: 0.85rem;
+        }
+
+        @media print {
+            body {
+                background: #ffffff;
+                padding: 0;
+            }
+            header {
+                box-shadow: none;
+                border: 1px solid #000;
+            }
+            .kpi-card, .pillar-card, .table-section, .executive-summary {
+                box-shadow: none;
+                border: 1px solid #ddd;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+
+    <!-- Header Corporativo -->
+    <header>
+        <span class="header-tag">Control Interno & Gobernanza Comercial</span>
+        <h1>Auditoría Integral en "Validar Matriz"</h1>
+        <p>Informe ejecutivo sobre la verificación automática de rutas de suministro, precios de venta, costos de flete y contratos marco en SAP GUI para CEMEX México.</p>
+        
+        <div class="meta-bar">
+            <div><strong>Archivo Maestro:</strong> Matriz_Precios_TODOS_Master_Consolidado</div>
+            <div><strong>Volumen Analizado:</strong> 5,599 Rutas Activas</div>
+            <div><strong>Sistemas Conectados:</strong> SAP ECC (SD, MM, Pricing)</div>
+            <div><strong>Frecuencia:</strong> Previa a Confirmación y Cierre Mensual</div>
+        </div>
+    </header>
+
+    <!-- Resumen Ejecutivo -->
+    <section class="executive-summary">
+        <h2>¿Qué es y para qué sirve "Validar Matriz"?</h2>
+        <p>
+            Es el motor de auditoría preventiva que cruza, en cuestión de minutos, las <strong>5,599 rutas activas</strong> del archivo maestro de Excel directamente contra los registros vivos de <strong>SAP GUI</strong>. Su objetivo es detectar discrepancias antes de que se facture a clientes o se paguen fletes a transportistas, eliminando fugas de margen operativo ($MOP$).
+        </p>
+
+        <div class="kpi-grid">
+            <div class="kpi-card green">
+                <div class="kpi-number">3 en 1</div>
+                <div class="kpi-title">Triple Verificación Simultánea</div>
+                <div class="kpi-desc">Audita al mismo tiempo: Precios VK13, Contrato de Compra y Contrato de Venta.</div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-number">± $0.05</div>
+                <div class="kpi-title">Tolerancia Estricta de Precio</div>
+                <div class="kpi-desc">Detecta variaciones centavo a centavo entre lo presupuestado y lo cargado en SAP.</div>
+            </div>
+            <div class="kpi-card red">
+                <div class="kpi-number">100%</div>
+                <div class="kpi-title">Alineación de Destino (Obra/Planta)</div>
+                <div class="kpi-desc">Valida el Destinatario de Mercancías real (KUWEV-KUNNR) evitando cargos a clientes equivocados.</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Los 3 Pilares de Validación en SAP -->
+    <section class="pillars-section">
+        <div class="section-header">
+            <h2>Los 3 Pilares que se Auditan en SAP</h2>
+            <p>Cada una de las 5,599 filas del Excel pasa por tres filtros independientes de control de riesgos:</p>
+        </div>
+
+        <div class="pillars-grid">
+            
+            <!-- Pilar 1: VK13 -->
+            <div class="pillar-card">
+                <div>
+                    <div class="pillar-top">
+                        <span class="pillar-badge">Pilar 1</span>
+                    </div>
+                    <h3>Precios de Venta y Fletes</h3>
+                    <span class="pillar-sap">Transacción SAP: VK13 (Condición ZMAH / ZMA6 / ZMP1)</span>
+                    <ul class="pillar-list">
+                        <li><strong>Precio de Materia Prima:</strong> Coincidencia del importe unitario autorizado.</li>
+                        <li><strong>Tarifa de Flete:</strong> Valida que el flete por tonelada o m3 esté registrado en SAP.</li>
+                        <li><strong>Modalidad de Entrega:</strong> Verifica condición 01 (Entregado) o 02 (Recogido en cantera).</li>
+                        <li><strong>Unidad de Medida:</strong> Consistencia estricta (M3 vs Toneladas con factor PV).</li>
+                    </ul>
+                </div>
+                <div class="pillar-risk">
+                    <strong>Riesgo mitigado:</strong> Facturar al cliente un precio desactualizado o no cobrar el flete correspondiente.
+                </div>
+            </div>
+
+            <!-- Pilar 2: Contrato Compra -->
+            <div class="pillar-card">
+                <div>
+                    <div class="pillar-top">
+                        <span class="pillar-badge">Pilar 2</span>
+                    </div>
+                    <h3>Contratos de Compra (Insumos)</h3>
+                    <span class="pillar-sap">Transacción SAP: Z0116_TRAOPE / ME33K</span>
+                    <ul class="pillar-list">
+                        <li><strong>Contrato y Posición Activa:</strong> Comprueba que la línea marco no esté vencida ni dada de baja.</li>
+                        <li><strong>Proveedor y Ship From:</strong> Valida la cantera autorizada y su extensión efectiva (Z1017).</li>
+                        <li><strong>Costo Total Compra:</strong> Coincidencia del costo del agregador (MP + Flete Compra).</li>
+                        <li><strong>Controles Obligatorios:</strong> Valida que tenga Indicador Obligatorio "X" y Control "0004".</li>
+                    </ul>
+                </div>
+                <div class="pillar-risk">
+                    <strong>Riesgo mitigado:</strong> Pagar sobrecostos a canteras o emitir pedidos sobre contratos no vigentes.
+                </div>
+            </div>
+
+            <!-- Pilar 3: Contrato Venta -->
+            <div class="pillar-card">
+                <div>
+                    <div class="pillar-top">
+                        <span class="pillar-badge">Pilar 3</span>
+                    </div>
+                    <h3>Contratos de Venta (Clientes SD)</h3>
+                    <span class="pillar-sap">Transacción SAP: VA43 / ZSDD4501</span>
+                    <ul class="pillar-list">
+                        <li><strong>Destino Real de Entrega:</strong> Audita el código de obra o planta (campo KUWEV-KUNNR).</li>
+                        <li><strong>Material Específico:</strong> Valida el código numérico exacto (VBAP-MATNR), no el texto.</li>
+                        <li><strong>Precio Contratado:</strong> Compara el precio neto de la partida en el contrato de venta.</li>
+                        <li><strong>Unidad de Venta:</strong> Verifica que coincida la unidad de medida (M3/TN).</li>
+                    </ul>
+                </div>
+                <div class="pillar-risk">
+                    <strong>Riesgo mitigado:</strong> Bloqueos en pedidos de venta por discrepancia en el destinatario de la obra.
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+    <!-- Tabla de Columnas del Excel -->
+    <section class="table-section">
+        <h2>Detalle de las 35 Columnas del Archivo Excel</h2>
+        <p>A continuación se muestra qué función desempeña cada columna del libro maestro durante la auditoría:</p>
+
+        <div class="table-responsive">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 70px;">Columna</th>
+                        <th>Nombre en el Excel</th>
+                        <th style="width: 170px;">Clasificación</th>
+                        <th>¿Qué valida el Bot en SAP?</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>A (1)</strong></td>
+                        <td>Concat1</td>
+                        <td><span class="badge badge-internal">Interno Excel</span></td>
+                        <td>Identificador compuesto de ruta para ubicar la fila. No se audita en SAP.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>B (2)</strong></td>
+                        <td>Concat2</td>
+                        <td><span class="badge badge-internal">Interno Excel</span></td>
+                        <td>Llave secundaria. No se audita en SAP.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>C (3)</strong></td>
+                        <td>Sociedad</td>
+                        <td><span class="badge badge-key">Clave de Acceso</span></td>
+                        <td>Define la <strong>Organización de Ventas</strong> (7100 Filial o 7180 Terceros) para consultar SAP.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>D (4)</strong></td>
+                        <td>Ship From</td>
+                        <td><span class="badge badge-audit">Auditado en SAP</span></td>
+                        <td>Valida el código de cantera o proveedor de materia prima en VK13, Compra y Venta.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>E (5)</strong></td>
+                        <td>Nombre SF</td>
+                        <td><span class="badge badge-internal">Texto Informativo</span></td>
+                        <td>Nombre comercial de la cantera. Se ignora para evitar discrepancias por ortografía.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>F (6)</strong></td>
+                        <td>Centro</td>
+                        <td><span class="badge badge-audit">Auditado en SAP</span></td>
+                        <td>Valida el código de Centro / Planta CEDIS suministrador (ej. DW40) en Z0116 y VK13.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>G (7)</strong></td>
+                        <td>Desc. Centro</td>
+                        <td><span class="badge badge-internal">Texto Informativo</span></td>
+                        <td>Descripción del centro. No se valida en SAP.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>H (8)</strong></td>
+                        <td>Destino</td>
+                        <td><span class="badge badge-audit">Auditado Crítico</span></td>
+                        <td>Valida el código de Cliente/Obra en VK13, Compra y el <strong>Destinatario KUWEV-KUNNR</strong> en VA43.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>I (9)</strong></td>
+                        <td>Nombre Destino</td>
+                        <td><span class="badge badge-internal">Texto Informativo</span></td>
+                        <td>Razón social o nombre de la obra. No se audita.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>J (10)</strong></td>
+                        <td>Material</td>
+                        <td><span class="badge badge-audit">Auditado Crítico</span></td>
+                        <td>Valida el código numérico del material (ej. 10234222) en VK13, Z0116 y VA43.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>K (11)</strong></td>
+                        <td>Denominación</td>
+                        <td><span class="badge badge-internal">Texto Informativo</span></td>
+                        <td>Descripción técnica del material (ej. Grava triturada caliza). No se audita.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>L (12)</strong></td>
+                        <td>PV</td>
+                        <td><span class="badge badge-math">Tolerancia Matemática</span></td>
+                        <td>Factor de Peso Volumétrico. Permite validar equivalencias de precios entre $TN$ y $M3$.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>M (13)</strong></td>
+                        <td>Inicio Vigencia (VK13)</td>
+                        <td><span class="badge badge-internal">Informativo</span></td>
+                        <td>Fecha de inicio en el Excel. Informativa.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>N (14)</strong></td>
+                        <td>Fin Vigencia (VK13)</td>
+                        <td><span class="badge badge-internal">Informativo</span></td>
+                        <td>Fecha de fin en el Excel. Informativa.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>O (15)</strong></td>
+                        <td>Modalidad Venta</td>
+                        <td><span class="badge badge-audit">Auditado en SAP</span></td>
+                        <td>Valida la condición de expedición VSBED en VK13 y Venta (01 Entregado / 02 Recogido).</td>
+                    </tr>
+                    <tr>
+                        <td><strong>P (16)</strong></td>
+                        <td>Clase Cond. MP</td>
+                        <td><span class="badge badge-key">Clave de Acceso</span></td>
+                        <td>Indica la clase de condición exacta a buscar en VK13 (ZMAH para 7100 o ZMA6 para 7180).</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Q (17)</strong></td>
+                        <td>Importe MP</td>
+                        <td><span class="badge badge-audit">Auditado Precio</span></td>
+                        <td>Audita el importe autorizado de materia prima contra la condición en SAP (tolerancia ±$0.05).</td>
+                    </tr>
+                    <tr>
+                        <td><strong>R (18)</strong></td>
+                        <td>UM Venta</td>
+                        <td><span class="badge badge-audit">Auditado en SAP</span></td>
+                        <td>Audita que la unidad de medida de la condición en SAP sea idéntica (TN o M3).</td>
+                    </tr>
+                    <tr>
+                        <td><strong>S (19)</strong></td>
+                        <td>Importe Flete</td>
+                        <td><span class="badge badge-audit">Auditado Precio</span></td>
+                        <td>Audita la tarifa autorizada de flete contra la condición ZMPH o ZMP1 en SAP.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>T (20)</strong></td>
+                        <td>No. Contrato Compra</td>
+                        <td><span class="badge badge-audit">Auditado Crítico</span></td>
+                        <td>Audita que el contrato marco y la partida (ej. 4600057629-60) existan activos en Z0116.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>U (21)</strong></td>
+                        <td>Inicio Vigencia Compra</td>
+                        <td><span class="badge badge-internal">Informativo</span></td>
+                        <td>Fecha de inicio del contrato. Informativa.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>V (22)</strong></td>
+                        <td>Fin Vigencia Compra</td>
+                        <td><span class="badge badge-internal">Informativo</span></td>
+                        <td>Fecha de fin del contrato. Informativa.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>W (23)</strong></td>
+                        <td>Costo Total TRAOPE</td>
+                        <td><span class="badge badge-audit">Auditado Precio</span></td>
+                        <td>Compara el precio neto de la partida en el contrato de compra de SAP.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>X (24)</strong></td>
+                        <td>Flete Compra</td>
+                        <td><span class="badge badge-math">Auxiliar de Cálculo</span></td>
+                        <td>Se utiliza para verificar si el contrato en SAP viene con costo integral (MP + Flete).</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Y (25)</strong></td>
+                        <td>MP Compra (Costo Mat)</td>
+                        <td><span class="badge badge-math">Auxiliar de Cálculo</span></td>
+                        <td>Se utiliza para verificar si el contrato en SAP viene a precio neto solo de producto.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Z (26)</strong></td>
+                        <td>Margen Material (MOP %)</td>
+                        <td><span class="badge badge-internal">Gobernanza Excel</span></td>
+                        <td>Cálculo de rentabilidad del modelo financiero. No existe en SAP.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AA (27)</strong></td>
+                        <td>UM Costo</td>
+                        <td><span class="badge badge-internal">Informativo</span></td>
+                        <td>Unidad de medida del costo (M3 o TN). Informativa.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AB (28)</strong></td>
+                        <td>Tipo Operación</td>
+                        <td><span class="badge badge-internal">Gobernanza Excel</span></td>
+                        <td>Categoría de la ruta (Canteras Propias / Terceros). No se audita.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AC (29)</strong></td>
+                        <td>Nivel Autorización / Alerta</td>
+                        <td><span class="badge badge-internal">Gobernanza Excel</span></td>
+                        <td>Nivel jerárquico de autorización en Excel. No se audita.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AD (30)</strong></td>
+                        <td>Validación 1</td>
+                        <td><span class="badge badge-internal">Fórmula Excel</span></td>
+                        <td>Fórmula interna del archivo. No se audita.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AE (31)</strong></td>
+                        <td>Validación 2</td>
+                        <td><span class="badge badge-internal">Fórmula Excel</span></td>
+                        <td>Fórmula interna del archivo. No se audita.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AF (32)</strong></td>
+                        <td>Semáforo</td>
+                        <td><span class="badge badge-internal">Fórmula Excel</span></td>
+                        <td>Resultado condicional original del Excel (DIFERENCIA / OK).</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AG (33)</strong></td>
+                        <td>No. Contrato Venta</td>
+                        <td><span class="badge badge-audit">Auditado Crítico</span></td>
+                        <td>Audita que el contrato de venta y su posición existan en VA43 / ZSDD4501.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AH (34)</strong></td>
+                        <td>UM Contrato</td>
+                        <td><span class="badge badge-audit">Auditado Crítico</span></td>
+                        <td>Audita la unidad de medida contratada contra el campo VBAP-KMEIN en VA43.</td>
+                    </tr>
+                    <tr>
+                        <td><strong>AI (35)</strong></td>
+                        <td>Precio Contrato</td>
+                        <td><span class="badge badge-audit">Auditado Precio</span></td>
+                        <td>Audita el precio neto acordado con el cliente contra el precio registrado en VA43.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- Beneficios para la Gerencia -->
+    <section>
+        <div class="section-header">
+            <h2>Beneficios Directos para la Dirección y Gerencia</h2>
+            <p>Impacto estratégico y financiero de contar con este validador automatizado:</p>
+        </div>
+
+        <div class="benefits-grid">
+            <div class="benefit-card">
+                <h4>🛡️ Certeza de Cobro y Facturación</h4>
+                <p>Garantiza que cada entrega cuente con el precio de venta y tarifa de flete exacta aprobada, evitando notas de crédito y refacturaciones costosas.</p>
+            </div>
+            <div class="benefit-card">
+                <h4>💰 Protección del Margen Operativo ($MOP)</h4>
+                <p>Asegura que el diferencial entre el contrato de compra (cantera) y el contrato de venta (cliente) cumpla estrictamente con el margen fijado.</p>
+            </div>
+            <div class="benefit-card">
+                <h4>⚡ Eficiencia Operativa Masiva</h4>
+                <p>Auditar manualmente 5,599 rutas tomaba días enteros a analistas; el bot ejecuta la revisión exhaustiva en minutos y con trazabilidad 100% auditable.</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer>
+        <p>CEMEX México &bull; Herramienta de Consolidación y Gobernanza de Rutas 2026 &bull; Generado para Control de Gestión y Precios</p>
+    </footer>
+
+</div>
+
+</body>
+</html>
