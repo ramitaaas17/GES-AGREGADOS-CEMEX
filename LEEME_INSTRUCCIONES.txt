@@ -1,0 +1,42 @@
+===============================================================================
+       CEMEX AGREGADOS - SISTEMA INTEGRAL DE MATRIZ DE PRECIOS Y COSTOS
+===============================================================================
+
+¡Bienvenido! Este paquete contiene la herramienta oficial para generar la 
+Matriz de Precios consolidada (Master y Cliente Final) y la base para Power BI.
+
+-------------------------------------------------------------------------------
+¿CÓMO USAR LA APLICACIÓN? (2 OPCIONES FÁCILES)
+-------------------------------------------------------------------------------
+
+OPCIÓN 1: DOBLE CLIC AL EJECUTABLE (RECOMENDADO - 100% AUTOMÁTICO)
+   1. Da doble clic sobre el archivo:
+      --> CEMEX_Matriz.exe
+   2. Se abrirá directamente la ventana de la aplicación.
+   (Nota: No necesitas tener instalado Python ni configurar nada).
+
+OPCIÓN 2: EJECUTAR MEDIANTE EL ARCHIVO .BAT
+   1. Da doble clic sobre el archivo:
+      --> EJECUTAR_MATRIZ_CEMEX.bat
+   2. Creará un acceso directo en tu Escritorio y abrirá la aplicación.
+
+-------------------------------------------------------------------------------
+PASOS PARA GENERAR LA MATRIZ:
+-------------------------------------------------------------------------------
+1. Al abrir la ventana, la herramienta detecta automáticamente el archivo de
+   insumo Excel incluido en esta misma carpeta.
+2. Selecciona los CEDIS que deseas procesar (o marca "TODOS").
+3. Selecciona los reportes que deseas generar:
+   - Versión Master: Contiene costos de compra (TRAOPE) y márgenes (MOP).
+   - Versión Cliente Final: Versión limpia sin costos confidenciales para ventas.
+4. Da clic en el botón verde "Generar Matriz de Precios".
+
+-------------------------------------------------------------------------------
+¿DÓNDE SE GUARDAN LOS RESULTADOS?
+-------------------------------------------------------------------------------
+Los archivos Excel generados se guardan automáticamente dentro de la subcarpeta:
+--> _salidas_integradas
+
+===============================================================================
+Soporte y Consultas: Equipo de Automatización de Ventas Industriales CEMEX
+===============================================================================
